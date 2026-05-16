@@ -1,0 +1,12 @@
+{
+  "name": "convex-backend",
+  "version": "1.0.0",
+  "description": "Convex backend skill for building reactive, type-safe, production-grade backends",
+  "author": {
+    "name": "Seth Raphael",
+    "email": "seth@convex.dev"
+  },
+  "homepage": "https://convex.dev",
+  "repository": "https://github.com/get-convex/convex-backend-skill",
+  "license": "Apache-2.0"
+}
