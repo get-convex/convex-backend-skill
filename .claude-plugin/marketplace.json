@@ -10,7 +10,7 @@
   },
   "plugins": [
     {
-      "name": "convex-backend",
+      "name": "convex",
       "displayName": "Convex",
       "source": "./",
       "description": "Official Convex plugin for Claude Code with bundled Convex skills and MCP tools.",

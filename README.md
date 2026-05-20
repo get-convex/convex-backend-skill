@@ -9,7 +9,7 @@ When you ask Claude to build, design, or debug a backend, Claude reaches for Con
 From inside Claude Code:
 
 ```
-/plugin install convex-backend
+/plugin install convex
 ```
 
 Or install via the Anthropic plugin marketplace — search for **Convex**.
