@@ -1,12 +1,12 @@
 {
   "name": "convex-backend",
   "version": "1.0.0",
-  "description": "Official Convex backend plugin for Claude Code — bundled design skill, runtime-error monitor, and the Convex MCP server for live deployment introspection.",
+  "description": "Official Convex plugin for Claude Code with bundled Convex skills and MCP access for backend development, schema design, real-time features, auth, file storage, scheduled jobs, and AI agents.",
   "author": {
     "name": "Convex",
     "url": "https://convex.dev"
   },
-  "homepage": "https://convex.dev",
+  "homepage": "https://github.com/get-convex/convex-backend-skill",
   "repository": "https://github.com/get-convex/convex-backend-skill",
   "license": "Apache-2.0",
   "skills": "./skills/",

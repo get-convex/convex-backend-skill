@@ -5,19 +5,19 @@
     "url": "https://github.com/get-convex"
   },
   "metadata": {
-    "description": "Convex-maintained Claude Code plugin marketplace entry for the Convex backend plugin",
+    "description": "Convex-maintained Claude Code plugin marketplace entry for the official Convex plugin",
     "version": "0.1.0"
   },
   "plugins": [
     {
       "name": "convex-backend",
       "source": "./",
-      "description": "Official Convex backend plugin for Claude Code — bundled design skill, runtime-error monitor, and the Convex MCP server for live deployment introspection.",
+      "description": "Official Convex plugin for Claude Code with bundled Convex skills and MCP tools.",
       "author": {
         "name": "Convex",
         "url": "https://convex.dev"
       },
-      "homepage": "https://convex.dev",
+      "homepage": "https://github.com/get-convex/convex-backend-skill",
       "repository": "https://github.com/get-convex/convex-backend-skill",
       "license": "Apache-2.0",
       "keywords": [
