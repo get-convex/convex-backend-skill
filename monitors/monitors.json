@@ -2,6 +2,7 @@
   {
     "name": "convex-runtime-errors",
     "command": "sh -c 'while true; do if [ -f .env.local ] && grep -q \"^CONVEX_DEPLOYMENT=\" .env.local 2>/dev/null && command -v npx >/dev/null 2>&1; then npx convex logs 2>/dev/null | grep --line-buffered -iE \"error|exception|throw|failed|⨯|RangeError|TypeError|ReferenceError|Schema validation|ReturnsValidation|ArgumentValidation|Too many reads|Too many writes|SystemTimeoutError|OCC conflict|nonInteractiveError\" 2>/dev/null; fi; sleep 30; done'",
+    "when": "on-skill-invoke:design",
     "description": "A Convex function in the live deployment just emitted an error or exception (useQuery/useMutation/useAction call, scheduled function, cron, or HTTP action). This monitor streams `npx convex logs` from the linked deployment and surfaces any matched line as a notification, so you find out about server-side failures the moment they happen instead of waiting for the user to report a broken UI. When this fires: read the full log line for context (function name, error class, stack), look up the cause in the Runtime Errors table inside the skill, fix the file, and let `convex dev` push the new version. The command self-guards: if there's no `.env.local` with `CONVEX_DEPLOYMENT` set, or `npx` isn't on PATH, it loops silently every 30s without producing notifications or errors — so it's safe in any cwd, including empty directories or non-Convex projects. If `npx convex logs` exits mid-session (transient auth/network issue), the loop sleeps 30s and retries automatically."
   }
 ]
