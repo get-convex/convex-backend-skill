@@ -1,0 +1,42 @@
+{
+  "name": "convex",
+  "owner": {
+    "name": "Convex",
+    "url": "https://github.com/get-convex"
+  },
+  "metadata": {
+    "description": "Convex-maintained Claude Code plugin marketplace entry for the Convex backend plugin",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "convex-backend",
+      "source": "./",
+      "description": "Official Convex backend plugin for Claude Code — bundled design skill, runtime-error monitor, and the Convex MCP server for live deployment introspection.",
+      "author": {
+        "name": "Convex",
+        "url": "https://convex.dev"
+      },
+      "homepage": "https://convex.dev",
+      "repository": "https://github.com/get-convex/convex-backend-skill",
+      "license": "Apache-2.0",
+      "keywords": [
+        "convex",
+        "backend",
+        "database",
+        "realtime",
+        "reactive",
+        "websocket",
+        "auth",
+        "storage",
+        "scheduler",
+        "cron",
+        "agent",
+        "rag",
+        "mobile",
+        "typescript",
+        "mcp"
+      ]
+    }
+  ]
+}
