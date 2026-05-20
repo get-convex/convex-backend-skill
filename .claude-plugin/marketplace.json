@@ -11,6 +11,7 @@
   "plugins": [
     {
       "name": "convex-backend",
+      "displayName": "Convex",
       "source": "./",
       "description": "Official Convex plugin for Claude Code with bundled Convex skills and MCP tools.",
       "author": {
