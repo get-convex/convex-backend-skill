@@ -2,7 +2,7 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "convex",
   "displayName": "Convex",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Official Convex plugin for Claude Code with bundled Convex skills and MCP access for backend development, schema design, real-time features, auth, file storage, scheduled jobs, and AI agents.",
   "author": {
     "name": "Convex",
