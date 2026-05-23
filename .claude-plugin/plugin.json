@@ -12,7 +12,9 @@
   "repository": "https://github.com/get-convex/convex-backend-skill",
   "license": "Apache-2.0",
   "skills": "./skills/",
-  "agents": "./agents/",
+  "agents": [
+    "./agents/convex-expert.md"
+  ],
   "mcpServers": "./.mcp.json",
   "experimental": {
     "monitors": "./monitors/monitors.json"
