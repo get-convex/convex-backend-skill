@@ -1,0 +1,35 @@
+name: Validate plugin
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Check JSON files parse
+        run: |
+          for f in .claude-plugin/plugin.json .claude-plugin/marketplace.json .mcp.json monitors/monitors.json hooks/hooks.json; do
+            echo "Parsing $f"
+            node -e "JSON.parse(require('fs').readFileSync('$f','utf8'))"
+          done
+
+      - name: Check hook script syntax
+        run: node --check hooks/convex-typecheck.mjs
+
+      - name: Install Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Validate plugin manifest (strict)
+        run: claude plugin validate . --strict
+
+      - name: Validate marketplace manifest (strict)
+        run: claude plugin validate .claude-plugin/marketplace.json --strict
