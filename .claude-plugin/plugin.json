@@ -2,8 +2,8 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "convex",
   "displayName": "Convex",
-  "version": "1.0.2",
-  "description": "Bundled design skill, code-writing subagent, runtime-error monitor, and MCP server for live deployment introspection. Reactive, type-safe backends on one platform — schema, real-time, auth, file storage, scheduled jobs, and AI agents.",
+  "version": "1.0.3",
+  "description": "Bundled design skill, code-writing subagent, typecheck-on-edit hook, runtime-error monitor, and MCP server for live deployment introspection. Reactive, type-safe backends on one platform — schema, real-time, auth, file storage, scheduled jobs, and AI agents.",
   "author": {
     "name": "Convex",
     "url": "https://convex.dev"

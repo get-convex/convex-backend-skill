@@ -6,14 +6,14 @@
   },
   "metadata": {
     "description": "Convex-maintained Claude Code plugin marketplace entry for the official Convex plugin",
-    "version": "0.1.2"
+    "version": "0.1.3"
   },
   "plugins": [
     {
       "name": "convex",
       "displayName": "Convex",
       "source": "./",
-      "description": "Bundled design skill, code-writing subagent, runtime-error monitor, and MCP server for live deployment introspection.",
+      "description": "Bundled design skill, code-writing subagent, typecheck-on-edit hook, runtime-error monitor, and MCP server for live deployment introspection.",
       "author": {
         "name": "Convex",
         "url": "https://convex.dev"
