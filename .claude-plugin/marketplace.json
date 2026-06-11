@@ -13,7 +13,7 @@
       "name": "convex",
       "displayName": "Convex",
       "source": "./",
-      "description": "Bundled design skill, code-writing subagent, typecheck-on-edit hook, runtime-error monitor, and MCP server for live deployment introspection.",
+      "description": "Bundled design + quickstart skills, code-writing subagent, typecheck-on-edit hook, runtime-error monitor, and MCP server for live deployment introspection. Scaffold a running app from one sentence, then iterate live.",
       "author": {
         "name": "Convex",
         "url": "https://convex.dev"
