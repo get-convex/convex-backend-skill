@@ -106,7 +106,7 @@ The user provides backend requirements: an API, data model, server function, sch
 
 If your training data tells you any of the following, it is **outdated**:
 
-- "`npx convex dev` requires interactive GitHub login the first time." — False since the anonymous-deployment release. For headless agents, set `CONVEX_AGENT_MODE=anonymous` before invoking it; the CLI will skip every prompt. **If you see `✖ Cannot prompt for input in non-interactive terminals. (Team:)` (or any `Cannot prompt for input` error from convex), the fix is the env var, not a flag.** `--configure new` / `--dev-deployment local` alone do not bypass the team prompt — only `CONVEX_AGENT_MODE=anonymous` does:
+- "`npx convex dev` requires interactive GitHub login the first time." — False since the anonymous-deployment release. The CLI auto-selects an anonymous local deployment whenever stdin isn't a TTY **or** you're not logged in, so a genuinely headless invocation needs no env var. The one case it still prompts is a real pseudo-terminal (`isTTY`) while you're already logged in — common in agent/CI shells — where you'll hit `✖ Cannot prompt for input in non-interactive terminals. (Team:)`. **Setting `CONVEX_AGENT_MODE=anonymous` forces anonymous regardless of TTY/login, so it's the safe default for headless agents.** (`--configure new` / `--dev-deployment local` do not bypass the team prompt; the env var does.)
 
   ```sh
   CONVEX_AGENT_MODE=anonymous npx convex dev --once
@@ -404,6 +404,24 @@ See `convex.dev/components` for the directory. Components install via `npm insta
 
 Keep external API calls (sending emails, processing payments, calling LLMs) inside **actions**, not mutations. Actions run in a Node-like environment with network access; mutations are deterministic transactions and can't fetch. From the action, persist results via `ctx.runMutation(internal.x.y, ...)`.
 
+**Read environment variables through the generated `env` export, not `process.env`.** Convex ships type-safe env vars (since `convex@1.39`): `import { env } from "./_generated/server"` and read `env.STRIPE_SECRET_KEY`. Reaching for `process.env.STRIPE_SECRET_KEY` is the reflex agents fall into — it works at runtime (the generated `env` is `process.env` under the hood) but forces a `@types/node` dependency just to typecheck and gives you no name/type safety. The `env` export needs neither. Declare the vars in `convex/convex.config.ts` to get a fully typed, autocompleted `Env` (required vs. optional inferred from the validator):
+
+```typescript
+// convex/convex.config.ts
+import { defineApp } from "convex/server";
+import { v } from "convex/values";
+
+const app = defineApp({
+  env: {
+    STRIPE_SECRET_KEY: v.string(),
+    DEBUG_MODE: v.optional(v.string()),
+  },
+});
+export default app;
+```
+
+Without a declaration, `env` is still exported as `Record<string, string | undefined>` — typecheck-clean, just untyped. Set the values with `npx convex env set STRIPE_SECRET_KEY ...` (or the MCP `env set` tool), never by committing them.
+
 ```typescript
 // convex/crons.ts
 import { cronJobs } from "convex/server";
@@ -614,7 +632,7 @@ When building Convex backend features, follow these practices:
 - **Plan for multi-tenancy early** — Add `workspaceId: v.id("workspaces")` (or similar) to every shared table from day one, and gate access in every query/mutation.
 - **Mind resource limits** — Paginate or use the `migrations` / `workpool` components when you'd exceed 16K reads, 8K writes, 1 MiB doc, 8 MiB payload, or 1s query CPU.
 - **Deploy on save** — `npx convex dev` pushes on save. Watch the dev log for `Schema validation failed`, `ReturnsValidationError`, and `ArgumentValidationError` — these are the most common breakages and they surface immediately.
-- **For headless agents** — set `CONVEX_AGENT_MODE=anonymous` before `npx convex dev` so it skips every interactive prompt.
+- **For headless agents** — a non-TTY invocation already auto-selects an anonymous deployment, but set `CONVEX_AGENT_MODE=anonymous` before `npx convex dev` to force it even inside a pseudo-terminal while logged in (the one case that still prompts `Cannot prompt for input… (Team:)`).
 
 **IMPORTANT**: Match implementation complexity to the problem. A simple CRUD feature needs a schema, a few queries, and a few mutations — not an event-sourced architecture with CQRS. Conversely, a real-time collaborative feature with conflict resolution needs careful thought. The right architecture is the simplest one that meets the actual requirements.
 
