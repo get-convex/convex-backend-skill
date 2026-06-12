@@ -79,6 +79,7 @@ Hitting a limit = redesign, not retry. Paginate (`paginationOptsValidator` + `.p
 - **If a paginated query needs a `returns:` validator** (project convention or explicit request), validate the full `.paginate` result shape: `page`, `isDone`, `continueCursor`, **plus** `splitCursor: v.optional(v.union(v.string(), v.null()))` and `pageStatus: v.optional(v.union(v.literal("SplitRecommended"), v.literal("SplitRequired"), v.null()))` — omitting the optional fields throws `ReturnsValidationError` at runtime.
 
 - **Never `.collect()` a table that can grow unbounded.** Cap reads with `.take(n)` or paginate; for counts, use `@convex-dev/aggregate` instead of collecting rows to count them.
+- **Time-ordered listings (logs, feeds, messages, history, activity) return newest first.** Convex queries default to ascending `_creationTime`, so add `.order("desc")` explicitly, and cap the result (`.take(100)` is a sane default page) even when the spec doesn't say so — an uncapped, oldest-first event list is wrong in production regardless of what the prompt omitted.
 - **Don't pin component versions from memory** — write `"@convex-dev/<component>": "latest"` in package.json (or run the install command) unless the project already pins a version; invented version ranges fail `install`.
 
 ### React/client patterns
