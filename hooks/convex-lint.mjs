@@ -23,7 +23,7 @@
 //        callbacks never contain `q.field(`. Fix: `.withIndex(...)`.
 //     2. Old positional function syntax `query(async (ctx, …)` — Convex
 //        functions must use the object form with `args`/`returns`/`handler`.
-// - Everything else (missing `args:` / `returns:` on a function object) is a
+// - Everything else (missing `args:` on a function object) is a
 //   soft advisory delivered via `additionalContext` on an "allow" decision.
 // - Edge discipline: a hard-deny false positive is the worst outcome. When in
 //   doubt, allow; any internal error → exit 0 silent (try/catch everywhere).
@@ -183,14 +183,62 @@ try {
         `contains \`${snippet(positionalMatch[0])}\` — passing a bare async ` +
         `handler to \`${positionalMatch[1]}\` is the deprecated positional ` +
         `form. Convex functions use the object form: ` +
-        `${positionalMatch[1]}({ args: {...}, returns: ..., ` +
+        `${positionalMatch[1]}({ args: {...}, ` +
         `handler: async (ctx, args) => {...} }).`,
+    );
+  }
+
+  // Rule 3: imports from the wrong module — always fail tsc/deploy, so deny.
+  // The `Id`/`Doc` types live in ./_generated/dataModel (convex/values only
+  // exports `v` and value types); the function builders live in
+  // ./_generated/server (convex/server has no `query`/`mutation`/... exports).
+  const idFromValuesRe =
+    /import\s+(?:type\s+)?\{[^}]*\b(?:Id|Doc)\b[^}]*\}\s+from\s+["']convex\/values["']/;
+  const idFromValuesMatch = idFromValuesRe.exec(projected);
+  if (idFromValuesMatch) {
+    track("wrong_import_values", "deny");
+    deny(
+      `convex-lint rule "wrong import module": this write contains ` +
+        `\`${snippet(idFromValuesMatch[0])}\` — the \`Id\`/\`Doc\` types are ` +
+        `not exported by convex/values (it only exports \`v\` and value ` +
+        `types). Import them from "./_generated/dataModel" instead; this ` +
+        `import fails tsc.`,
+    );
+  }
+  const buildersFromServerRe =
+    /import\s+\{[^}]*\b(query|mutation|action|internalQuery|internalMutation|internalAction|httpAction)\b[^}]*\}\s+from\s+["']convex\/server["']/;
+  const buildersFromServerMatch = buildersFromServerRe.exec(projected);
+  if (buildersFromServerMatch) {
+    track("wrong_import_server", "deny");
+    deny(
+      `convex-lint rule "wrong import module": this write imports ` +
+        `\`${buildersFromServerMatch[1]}\` from "convex/server", which has no ` +
+        `such export — the function builders come from "./_generated/server". ` +
+        `This import fails the deploy bundler. (convex/server is correct only ` +
+        `for defineSchema/defineTable/httpRouter/cronJobs/paginationOptsValidator etc.)`,
+    );
+  }
+
+  const helpersFromGeneratedRe =
+    /import\s+\{[^}]*\b(paginationOptsValidator|defineSchema|defineTable|httpRouter|cronJobs)\b[^}]*\}\s+from\s+["']\.\/_generated\/server["']/;
+  const helpersFromGeneratedMatch = helpersFromGeneratedRe.exec(projected);
+  if (helpersFromGeneratedMatch) {
+    track("wrong_import_generated", "deny");
+    deny(
+      `convex-lint rule "wrong import module": this write imports ` +
+      `\`${helpersFromGeneratedMatch[1]}\` from "./_generated/server", which ` +
+      `does not export it — it comes from "convex/server". This import fails ` +
+      `the deploy bundler.`,
     );
   }
 
   // --- SOFT WARNINGS (never deny) ----------------------------------------
   // Heuristic: each `query({`-style block whose first ~300 chars contain no
-  // `args:` / `returns:` gets one advisory line.
+  // `args:` gets one advisory line. Deliberately args-only: the official
+  // Convex guidelines omit `returns:` validators, and spec-comparing tooling
+  // (e.g. convex-evals' compareFunctionSpec) treats an added `returns` as a
+  // mismatch — the previous returns advisory measurably caused functional
+  // failures by overriding session guidance to the contrary on every write.
   const warnings = [];
   let firstWarningRule = null;
   const objectFormRe =
@@ -198,23 +246,28 @@ try {
   let m;
   while ((m = objectFormRe.exec(projected)) !== null) {
     const head = projected.slice(m.index, m.index + 300);
-    const missing = [];
-    if (!/\bargs\s*:/.test(head)) missing.push("`args:`");
-    if (!/\breturns\s*:/.test(head)) missing.push("`returns:`");
-    if (missing.length > 0) {
-      if (firstWarningRule === null) {
-        firstWarningRule = missing[0] === "`args:`"
-          ? "missing_args"
-          : "missing_returns";
-      }
+    if (!/\bargs\s*:/.test(head)) {
+      if (firstWarningRule === null) firstWarningRule = "missing_args";
       warnings.push(
         `convex-lint: a \`${m[1]}({...})\` in \`${filePath}\` appears to be ` +
-          `missing ${missing.join(" and ")}. Convex functions should always ` +
-          `declare argument and return validators (use v.null() for ` +
-          `functions that return nothing).`,
+          `missing \`args:\`. Convex functions should always declare argument ` +
+          `validators (\`args: {}\` when they take none).`,
       );
     }
   }
+  // Advisory: bare .collect() — legitimate on small bounded tables, a scale
+  // bug on anything that grows. Never deny; just point at the alternatives.
+  if (/\.collect\(\)/.test(projected)) {
+    if (firstWarningRule === null) firstWarningRule = "bare_collect";
+    warnings.push(
+      `convex-lint: this write calls \`.collect()\`. If the table can grow ` +
+        `unbounded, cap the read with \`.take(n)\`, paginate with ` +
+        `\`paginationOptsValidator\` + \`.paginate\`, or use ` +
+        `\`@convex-dev/aggregate\` for counts — \`.collect()\` loads every ` +
+        `row and hits the ~16k-document read limit.`,
+    );
+  }
+
   if (warnings.length > 0) {
     track(firstWarningRule, "warn");
     allowWithWarnings(warnings.slice(0, 10));
