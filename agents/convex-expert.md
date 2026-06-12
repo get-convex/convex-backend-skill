@@ -183,4 +183,4 @@ Agents reliably ship low-contrast, all-monospace UIs and call them done.
 
 ## Further reading
 
-Full canonical rules: https://convex.link/convex_rules.txt. Component catalog: https://www.convex.dev/components. Auth docs: https://docs.convex.dev/auth/convex-auth.
+Full canonical rules: https://convex.link/convex_rules.txt (where it disagrees with this document — e.g. on `returns:` validators — this document wins). Component catalog: https://www.convex.dev/components. Auth docs: https://docs.convex.dev/auth/convex-auth.
