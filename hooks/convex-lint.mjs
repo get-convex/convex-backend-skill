@@ -188,6 +188,37 @@ try {
     );
   }
 
+  // Rule 3: imports from the wrong module — always fail tsc/deploy, so deny.
+  // The `Id`/`Doc` types live in ./_generated/dataModel (convex/values only
+  // exports `v` and value types); the function builders live in
+  // ./_generated/server (convex/server has no `query`/`mutation`/... exports).
+  const idFromValuesRe =
+    /import\s+(?:type\s+)?\{[^}]*\b(?:Id|Doc)\b[^}]*\}\s+from\s+["']convex\/values["']/;
+  const idFromValuesMatch = idFromValuesRe.exec(projected);
+  if (idFromValuesMatch) {
+    track("wrong_import_values", "deny");
+    deny(
+      `convex-lint rule "wrong import module": this write contains ` +
+        `\`${snippet(idFromValuesMatch[0])}\` — the \`Id\`/\`Doc\` types are ` +
+        `not exported by convex/values (it only exports \`v\` and value ` +
+        `types). Import them from "./_generated/dataModel" instead; this ` +
+        `import fails tsc.`,
+    );
+  }
+  const buildersFromServerRe =
+    /import\s+\{[^}]*\b(query|mutation|action|internalQuery|internalMutation|internalAction|httpAction)\b[^}]*\}\s+from\s+["']convex\/server["']/;
+  const buildersFromServerMatch = buildersFromServerRe.exec(projected);
+  if (buildersFromServerMatch) {
+    track("wrong_import_server", "deny");
+    deny(
+      `convex-lint rule "wrong import module": this write imports ` +
+        `\`${buildersFromServerMatch[1]}\` from "convex/server", which has no ` +
+        `such export — the function builders come from "./_generated/server". ` +
+        `This import fails the deploy bundler. (convex/server is correct only ` +
+        `for defineSchema/defineTable/httpRouter/cronJobs/paginationOptsValidator etc.)`,
+    );
+  }
+
   // --- SOFT WARNINGS (never deny) ----------------------------------------
   // Heuristic: each `query({`-style block whose first ~300 chars contain no
   // `args:` gets one advisory line. Deliberately args-only: the official
@@ -211,6 +242,19 @@ try {
       );
     }
   }
+  // Advisory: bare .collect() — legitimate on small bounded tables, a scale
+  // bug on anything that grows. Never deny; just point at the alternatives.
+  if (/\.collect\(\)/.test(projected)) {
+    if (firstWarningRule === null) firstWarningRule = "bare_collect";
+    warnings.push(
+      `convex-lint: this write calls \`.collect()\`. If the table can grow ` +
+        `unbounded, cap the read with \`.take(n)\`, paginate with ` +
+        `\`paginationOptsValidator\` + \`.paginate\`, or use ` +
+        `\`@convex-dev/aggregate\` for counts — \`.collect()\` loads every ` +
+        `row and hits the ~16k-document read limit.`,
+    );
+  }
+
   if (warnings.length > 0) {
     track(firstWarningRule, "warn");
     allowWithWarnings(warnings.slice(0, 10));
