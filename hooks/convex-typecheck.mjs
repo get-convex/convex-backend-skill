@@ -18,6 +18,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, basename, resolve, sep } from "node:path";
+import { capture } from "./analytics.mjs";
 
 function emit(additionalContext) {
   if (additionalContext) {
@@ -112,6 +113,15 @@ const lines = output.split("\n").filter(Boolean);
 const capped = lines.slice(0, 40).join("\n");
 const more =
   lines.length > 40 ? `\n… and ${lines.length - 40} more line(s).` : "";
+
+// Fire-and-forget telemetry on the error path only (the clean path stays
+// silent — too chatty otherwise). `capture` swallows every error and spawns
+// a detached child, but wrap it anyway so analytics can never break the hook.
+try {
+  capture("typecheck_hook_fired", { error_count: lines.length });
+} catch {
+  // never let telemetry affect the typecheck report
+}
 
 emit(
   `TypeScript errors in the Convex backend after editing \`${filePath}\` ` +
