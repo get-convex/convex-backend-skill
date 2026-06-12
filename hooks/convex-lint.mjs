@@ -219,6 +219,19 @@ try {
     );
   }
 
+  const helpersFromGeneratedRe =
+    /import\s+\{[^}]*\b(paginationOptsValidator|defineSchema|defineTable|httpRouter|cronJobs)\b[^}]*\}\s+from\s+["']\.\/_generated\/server["']/;
+  const helpersFromGeneratedMatch = helpersFromGeneratedRe.exec(projected);
+  if (helpersFromGeneratedMatch) {
+    track("wrong_import_generated", "deny");
+    deny(
+      `convex-lint rule "wrong import module": this write imports ` +
+      `\`${helpersFromGeneratedMatch[1]}\` from "./_generated/server", which ` +
+      `does not export it — it comes from "convex/server". This import fails ` +
+      `the deploy bundler.`,
+    );
+  }
+
   // --- SOFT WARNINGS (never deny) ----------------------------------------
   // Heuristic: each `query({`-style block whose first ~300 chars contain no
   // `args:` gets one advisory line. Deliberately args-only: the official
