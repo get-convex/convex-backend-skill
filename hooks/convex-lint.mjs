@@ -23,7 +23,7 @@
 //        callbacks never contain `q.field(`. Fix: `.withIndex(...)`.
 //     2. Old positional function syntax `query(async (ctx, …)` — Convex
 //        functions must use the object form with `args`/`returns`/`handler`.
-// - Everything else (missing `args:` / `returns:` on a function object) is a
+// - Everything else (missing `args:` on a function object) is a
 //   soft advisory delivered via `additionalContext` on an "allow" decision.
 // - Edge discipline: a hard-deny false positive is the worst outcome. When in
 //   doubt, allow; any internal error → exit 0 silent (try/catch everywhere).
@@ -190,7 +190,11 @@ try {
 
   // --- SOFT WARNINGS (never deny) ----------------------------------------
   // Heuristic: each `query({`-style block whose first ~300 chars contain no
-  // `args:` / `returns:` gets one advisory line.
+  // `args:` gets one advisory line. Deliberately args-only: the official
+  // Convex guidelines omit `returns:` validators, and spec-comparing tooling
+  // (e.g. convex-evals' compareFunctionSpec) treats an added `returns` as a
+  // mismatch — the previous returns advisory measurably caused functional
+  // failures by overriding session guidance to the contrary on every write.
   const warnings = [];
   let firstWarningRule = null;
   const objectFormRe =
@@ -198,20 +202,12 @@ try {
   let m;
   while ((m = objectFormRe.exec(projected)) !== null) {
     const head = projected.slice(m.index, m.index + 300);
-    const missing = [];
-    if (!/\bargs\s*:/.test(head)) missing.push("`args:`");
-    if (!/\breturns\s*:/.test(head)) missing.push("`returns:`");
-    if (missing.length > 0) {
-      if (firstWarningRule === null) {
-        firstWarningRule = missing[0] === "`args:`"
-          ? "missing_args"
-          : "missing_returns";
-      }
+    if (!/\bargs\s*:/.test(head)) {
+      if (firstWarningRule === null) firstWarningRule = "missing_args";
       warnings.push(
         `convex-lint: a \`${m[1]}({...})\` in \`${filePath}\` appears to be ` +
-          `missing ${missing.join(" and ")}. Convex functions should always ` +
-          `declare argument and return validators (use v.null() for ` +
-          `functions that return nothing).`,
+          `missing \`args:\`. Convex functions should always declare argument ` +
+          `validators (\`args: {}\` when they take none).`,
       );
     }
   }
