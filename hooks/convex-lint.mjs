@@ -183,7 +183,7 @@ try {
         `contains \`${snippet(positionalMatch[0])}\` — passing a bare async ` +
         `handler to \`${positionalMatch[1]}\` is the deprecated positional ` +
         `form. Convex functions use the object form: ` +
-        `${positionalMatch[1]}({ args: {...}, returns: ..., ` +
+        `${positionalMatch[1]}({ args: {...}, ` +
         `handler: async (ctx, args) => {...} }).`,
     );
   }
