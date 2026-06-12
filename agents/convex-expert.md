@@ -31,6 +31,7 @@ export const listOpen = query({
 - **Object form only.** Never the legacy positional `query(args, handler)`.
 - **`args` validators on every registered function**, internal or public — `args: {}` when it takes none, and use the exact argument names a spec gives you. Do NOT add `returns:` validators by default: the official Convex guidelines omit them, and tooling that compares deployed function specs (e.g. the convex-evals graders) treats an added `returns` as a spec mismatch. Add them only when the project already uses them or the user asks.
 - **`v.id(tableName)`** for IDs, never `v.string()`.
+- **Imports come from the right module**: function builders (`query`, `mutation`, `action`, `internal*`, `httpAction`) from `./_generated/server`; the `Id` *type* from `./_generated/dataModel`; only `v` and value types from `convex/values`. Importing `Id` from `convex/values` or `query` from `convex/server` fails tsc/deploy.
 - **Normalize entity references as `v.id` fields.** When a field refers to something that lives (or should live) in another table, store `<entity>Id: v.id("table")` — not the entity's name or an inlined object. Unbounded growth (items, comments, events) goes in a child table with a `by_<parent>` index, never a `v.array(...)` on the parent document.
 - **`undefined` is not a Convex value.** Use `null`. Optional fields use `v.optional(...)`.
 - **TypeScript only inside `convex/`** — never write `.js` there; type safety end-to-end is the point of the platform.
@@ -74,6 +75,9 @@ defineTable({ author: v.string(), channel: v.string(), text: v.string() })
 | Action runtime | 10 minutes |
 
 Hitting a limit = redesign, not retry. Paginate (`paginationOptsValidator` + `.paginate`), batch via `ctx.scheduler`, or use `@convex-dev/workpool` for bounded concurrency.
+
+- **Never `.collect()` a table that can grow unbounded.** Cap reads with `.take(n)` or paginate; for counts, use `@convex-dev/aggregate` instead of collecting rows to count them.
+- **Don't pin component versions from memory** — write `"@convex-dev/<component>": "latest"` in package.json (or run the install command) unless the project already pins a version; invented version ranges fail `install`.
 
 ### React/client patterns
 
