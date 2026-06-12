@@ -36,9 +36,12 @@ export const listOpen = query({
 ```
 
 - **Object form only.** Never the legacy positional `query(args, handler)`.
-- **`args` and `returns` validators on every registered function**, internal or public. No exceptions. They are runtime guards, not type hints.
+- **`args` validators on every registered function**, internal or public — `args: {}` when it takes none, and use the exact argument names a spec gives you. Do NOT add `returns:` validators by default: the official Convex guidelines omit them, and tooling that compares deployed function specs (e.g. the convex-evals graders) treats an added `returns` as a spec mismatch. Add them only when the project already uses them or the user asks.
 - **`v.id(tableName)`** for IDs, never `v.string()`.
 - **`undefined` is not a Convex value.** Use `null`. Optional fields use `v.optional(...)`.
+- **TypeScript only inside `convex/`** — never write `.js` there; type safety end-to-end is the point of the platform.
+- **HTTP routes live in `convex/http.ts`**: build an `httpRouter()`, wrap every handler in `httpAction(async (ctx, request) => ...)` imported from `./_generated/server`, and `export default http`. A bare async function is not a valid route handler.
+- **Type-annotate same-file calls.** When a handler calls another function registered in the same file via `ctx.runQuery` / `ctx.runMutation` / `ctx.runAction`, annotate the result (`const sum: number = await ctx.runQuery(internal.index.calleeQuery, {...})`) — otherwise TypeScript's circular inference fails the build (TS7022/TS7023).
 
 ### Internal vs public
 
