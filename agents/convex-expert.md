@@ -57,6 +57,31 @@ defineTable({ author: v.string(), channel: v.string(), text: v.string() })
 - **Never include `_creationTime` as a column in a custom index.** Convex appends it automatically. Writing `["author", "_creationTime"]` errors at push as `IndexNameReserved`.
 - **To query by a related document's field, denormalize it.** Copy the needed field (e.g. `ownerName`) onto the querying table, index it, and keep it in sync where it's written — don't fetch-all-and-filter through the relation.
 
+### Mutation semantics
+
+- **Throw on missing targets.** A mutation that operates on a specific document (`delete`, `patch`, `update-by-id`) loads it first and **throws** if it doesn't exist: `const doc = await ctx.db.get(args.id); if (doc === null) throw new Error("Not found");` — silently returning hides caller bugs and breaks transactional expectations.
+- **Cascade deletes walk the graph.** Deleting a parent means deleting its children first (query each child table via the `by_<parent>` index and delete), recursively for grandchildren — Convex has no foreign-key cascades, so the mutation owns the whole transitive cleanup inside one transaction.
+
+### Testing (convex-test)
+
+When asked to write tests for Convex functions, use `convex-test` with vitest:
+
+```ts
+/// <reference types="vite/client" />
+import { convexTest } from "convex-test";
+import { expect, test } from "vitest";
+import schema from "./schema";
+import { api } from "./_generated/api";
+
+test("creates and lists", async () => {
+  const t = convexTest(schema, import.meta.glob("./**/*.ts"));
+  await t.mutation(api.index.create, { title: "x" });
+  expect(await t.query(api.index.list, {})).toHaveLength(1);
+});
+```
+
+The `import.meta.glob("./**/*.ts")` modules argument is required (it's how convex-test discovers function files), and the `/// <reference types="vite/client" />` directive is required for TypeScript to accept `import.meta.glob`. Dev deps: `convex-test`, `vitest`, `@edge-runtime/vm`.
+
 ### Schema evolution
 
 - **Add new fields as `v.optional(...)`** when the table has data. Required fields on existing rows = `Schema validation failed` on push.
