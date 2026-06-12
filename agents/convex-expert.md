@@ -31,6 +31,7 @@ export const listOpen = query({
 - **Object form only.** Never the legacy positional `query(args, handler)`.
 - **`args` validators on every registered function**, internal or public — `args: {}` when it takes none, and use the exact argument names a spec gives you. Do NOT add `returns:` validators by default: the official Convex guidelines omit them, and tooling that compares deployed function specs (e.g. the convex-evals graders) treats an added `returns` as a spec mismatch. Add them only when the project already uses them or the user asks.
 - **`v.id(tableName)`** for IDs, never `v.string()`.
+- **Normalize entity references as `v.id` fields.** When a field refers to something that lives (or should live) in another table, store `<entity>Id: v.id("table")` — not the entity's name or an inlined object. Unbounded growth (items, comments, events) goes in a child table with a `by_<parent>` index, never a `v.array(...)` on the parent document.
 - **`undefined` is not a Convex value.** Use `null`. Optional fields use `v.optional(...)`.
 - **TypeScript only inside `convex/`** — never write `.js` there; type safety end-to-end is the point of the platform.
 - **HTTP routes live in `convex/http.ts`**: build an `httpRouter()`, wrap every handler in `httpAction(async (ctx, request) => ...)` imported from `./_generated/server`, and `export default http`. A bare async function is not a valid route handler.
@@ -51,7 +52,9 @@ defineTable({ author: v.string(), channel: v.string(), text: v.string() })
 
 - **Add an index for every read path.** Never `.filter()` for anything you'd put in a SQL `WHERE`. Use `withIndex(...)`.
 - Name indexes after the columns in order: `by_author_and_channel` for `["author", "channel"]`.
+- **Id columns drop the `Id` suffix in index names**: index `departmentId` as `by_department`, `["organizationId"]` as `by_organization`. If a spec gives explicit index names, use those exactly — and create only the indexes asked for.
 - **Never include `_creationTime` as a column in a custom index.** Convex appends it automatically. Writing `["author", "_creationTime"]` errors at push as `IndexNameReserved`.
+- **To query by a related document's field, denormalize it.** Copy the needed field (e.g. `ownerName`) onto the querying table, index it, and keep it in sync where it's written — don't fetch-all-and-filter through the relation.
 
 ### Schema evolution
 
