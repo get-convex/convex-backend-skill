@@ -81,7 +81,10 @@ Claude will pick the right Convex primitive or component, scaffold the schema, w
 | **`quickstart` skill** (`/quickstart`) | Idea → running app in under a minute. Scaffolds a Next.js + shadcn "wow-shell" with a floating Chef panel (live progress feed, pulsing todo checklist, inline refinement questions, feature-request form), starts `convex dev` + `next dev` with error watchers armed, opens the browser, then builds the idea live. Hands `convex/` code to `convex-expert`. |
 | **`convex-expert` subagent** | Deep code-writing rules — object-form syntax, validator requirements, index naming, internal-vs-public, schema evolution, resource limits, component reflexes. Loaded only when delegated to, so the rules don't burn main-thread context. |
 | **Convex MCP server** | Live deployment introspection — `tables`, `function-spec`, `data`, `run-once-query`, `logs`, `env list/set/get`. Auto-wires via `npx convex mcp start` when the plugin is enabled. |
+| **Lint-on-save hook** | PreToolUse gate that blocks Convex anti-patterns *before they reach disk* (and before `convex dev` can push them): `.filter(q => q.field(...))` on db queries and old positional function syntax are denied with the correct pattern in the message; missing `args`/`returns` validators surface as advisories. |
+| **Typecheck-on-edit hook** | Runs `tsc --noEmit` on the `convex/` project after every edit and feeds errors straight back into context — the deep backstop behind the lint gate. |
 | **Runtime-error monitor** | Streams `npx convex logs` and surfaces matched errors (TS / schema validation / runtime exceptions / OCC conflicts) as Claude notifications, so you find out about server-side failures the moment they happen. Self-guards on unlinked projects. |
+| **OCC / insights monitor** | Polls `npx convex insights` every 10 minutes and notifies only on *new* OCC conflicts or read-limit insights, with the fix playbook (shrink transactions, `@convex-dev/aggregate` for hot counters, `.withIndex()`/`.paginate()` for read limits). Cloud deployments with user-level auth only; silent otherwise. |
 
 ## Capabilities
 
@@ -102,6 +105,12 @@ The plugin steers Claude toward the right Convex primitive for each task:
 ## Made by
 
 **Convex** — [convex.dev](https://convex.dev) — the open-source reactive database for fullstack apps. Issues and feature requests: [github.com/get-convex/convex-backend-skill/issues](https://github.com/get-convex/convex-backend-skill/issues).
+
+## Telemetry
+
+The plugin's hooks can emit anonymous usage telemetry to PostHog: a random device id (stored at `~/.convex/plugin-device-id`), the plugin version, your OS platform, and coarse event names (session start, lint findings by rule, typecheck failure counts). **Never** code contents, file paths, prompts, or any personal identifiers.
+
+Telemetry is currently **disabled by default** — no events are sent unless a PostHog key is configured via `CONVEX_PLUGIN_POSTHOG_KEY`. To opt out regardless of configuration, set `CONVEX_PLUGIN_TELEMETRY=0` or `DO_NOT_TRACK=1`. Sending is fire-and-forget in a detached process and never delays Claude.
 
 ## License
 
