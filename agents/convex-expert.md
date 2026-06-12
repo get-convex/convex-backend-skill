@@ -9,7 +9,7 @@ Your job: write or review code inside a Convex project's `convex/` directory. Wh
 
 ## Non-negotiable rules
 
-### Function syntax — object form, validators, returns
+### Function syntax — object form, args validators
 
 ```ts
 import { v } from "convex/values";
@@ -17,13 +17,6 @@ import { query, mutation, action } from "./_generated/server";
 
 export const listOpen = query({
   args: { limit: v.optional(v.number()) },
-  returns: v.array(
-    v.object({
-      _id: v.id("tickets"),
-      _creationTime: v.number(),
-      title: v.string(),
-    }),
-  ),
   handler: async (ctx, args) => {
     const rows = await ctx.db
       .query("tickets")
