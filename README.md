@@ -110,7 +110,7 @@ The plugin steers Claude toward the right Convex primitive for each task:
 
 The plugin's hooks can emit anonymous usage telemetry to PostHog: a random device id (stored at `~/.convex/plugin-device-id`), the plugin version, your OS platform, and coarse event names (session start, lint findings by rule, typecheck failure counts). **Never** code contents, file paths, prompts, or any personal identifiers.
 
-Telemetry is currently **disabled by default** — no events are sent unless a PostHog key is configured via `CONVEX_PLUGIN_POSTHOG_KEY`. To opt out regardless of configuration, set `CONVEX_PLUGIN_TELEMETRY=0` or `DO_NOT_TRACK=1`. Sending is fire-and-forget in a detached process and never delays Claude.
+Telemetry is **on by default** (it ships with Convex's public, write-only PostHog project key). To opt out, set `CONVEX_PLUGIN_TELEMETRY=0` or `DO_NOT_TRACK=1`; to redirect it to your own project, set `CONVEX_PLUGIN_POSTHOG_KEY` (an empty value disables sending entirely). Sending is fire-and-forget in a detached process and never delays Claude.
 
 ## License
 

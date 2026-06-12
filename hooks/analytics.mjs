@@ -11,10 +11,11 @@
 //   (stdio ignored, .unref()'d) and returns immediately; the parent hook can
 //   exit while the child completes the POST on its own (3s abort timeout,
 //   every error swallowed, always exits 0).
-// - Disabled-by-default gates, checked before anything else:
-//     * No CONVEX_PLUGIN_POSTHOG_KEY in the environment → fully disabled.
-//       (No key is baked in yet; a follow-up will ship the public
-//       write-only project key as the default.)
+// - On-by-default, with explicit opt-outs checked before anything else:
+//     * The public write-only PostHog project key (phc_…, the same one the
+//       Convex dashboard ships in its committed .env files) is baked in as the
+//       default, so telemetry works out of the box. Override or blank it with
+//       CONVEX_PLUGIN_POSTHOG_KEY; a blank key fully disables sending.
 //     * CONVEX_PLUGIN_TELEMETRY === "0" → disabled (explicit opt-out).
 //     * DO_NOT_TRACK is "1"/"true" → disabled (ecosystem convention).
 // - Privacy: NO code contents, file paths, prompts, or user identifiers ever
@@ -31,7 +32,12 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const POSTHOG_KEY = process.env.CONVEX_PLUGIN_POSTHOG_KEY ?? "";
+// Public, write-only PostHog project key (client-side `phc_` token, safe to
+// commit — it can only ingest events, not read them). Same key the Convex
+// dashboard ships in its committed .env files. Override via env, or set it to
+// an empty string to disable telemetry entirely.
+const DEFAULT_POSTHOG_KEY = "phc_JDNTRxeh2li2sQTRO0IcOYMJcp8fPs5nTK9TU751nQK";
+const POSTHOG_KEY = process.env.CONVEX_PLUGIN_POSTHOG_KEY ?? DEFAULT_POSTHOG_KEY;
 const POSTHOG_HOST =
   process.env.CONVEX_PLUGIN_POSTHOG_HOST ?? "https://us.i.posthog.com";
 
