@@ -118,6 +118,14 @@ Hitting a limit = redesign, not retry. Paginate (`paginationOptsValidator` + `.p
 - `await ctx.auth.getUserIdentity()` in any function that requires login. Returns `null` if unauthenticated — handle both branches.
 - Don't roll your own `users`/`sessions`/`accounts` tables. Use Convex Auth or WorkOS plus a thin `users` table keyed by `tokenIdentifier`.
 - **Convex Auth needs `JWT_PRIVATE_KEY` / `JWKS` / `SITE_URL` on the deployment.** Symptom of skipping: sign-in throws `TypeError: Cannot read properties of null (reading 'redirect')`. Fix: `npx @convex-dev/auth --skip-git-check --web-server-url <url>`.
+- **ALWAYS create `convex/auth.config.ts` when setting up Convex Auth** — it registers the JWT issuer so the deployment can validate session tokens. This is the single most dangerous omission in Convex Auth: without it, sign-in **succeeds** and tokens are issued, but `getAuthUserId(ctx)` returns `null` on every request, so the app is **silently always-signed-out with no error anywhere** — the hardest possible failure to diagnose. A complete Password setup is FOUR files, not three: `auth.ts` (`convexAuth({ providers: [Password] })`), `auth.config.ts`, `http.ts` (`auth.addHttpRoutes(http)`), and `...authTables` in `schema.ts`. The file is exactly:
+  ```ts
+  // convex/auth.config.ts
+  export default {
+    providers: [{ domain: process.env.CONVEX_SITE_URL, applicationID: "convex" }],
+  };
+  ```
+  (Add `@types/node` to devDependencies so `process.env` typechecks.)
 
 ### File storage
 
