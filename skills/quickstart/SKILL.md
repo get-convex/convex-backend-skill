@@ -115,12 +115,15 @@ If your todo list starts with "schema" before "static UI", reorder it.
 
 **Edit order: write a new component file *first*, then reference it in `app/page.tsx`** in the same turn — otherwise HMR recompiles between the two writes and the live page flashes a `ReferenceError`.
 
+**After any UI edit, run `npx tsc --noEmit` — "it compiled" is not enough.** The bootstrap's log watchers tail the Convex and Next *terminal* logs, but a client-only render crash (a dropped component → `X is not defined`, a `string` where a branded `Id<...>` is required) shows **only in the browser overlay** — never in those logs. `next dev`'s loose HMR typecheck misses this whole class; a clean `tsc --noEmit` is the gate. This is doubly important right after the `convex-expert` subagent rewrites a file (it can silently drop an export the page imports — a green push hides it).
+
 **Pre-yield checklist — verify ALL before your final message:**
-1. `todos:listAll` shows every item `done` (a lingering `active` item reads as "agent quit halfway").
-2. Your last `progress:post` was `kind:"shipped"` with a v1 summary.
-3. `app/layout.tsx` `metadata.title` names *this* app, not the scaffold default.
-4. `refinementQuestions:listOpen` shows zero open rows.
-5. You re-read the error logs and tailed feature-requests for ~60s after shipping (users click "request a feature" in the first minute; don't yield before then).
+1. `npx tsc --noEmit` is clean (catches dropped components / `Id` type errors the log watchers never see).
+2. `todos:listAll` shows every item `done` (a lingering `active` item reads as "agent quit halfway").
+3. Your last `progress:post` was `kind:"shipped"` with a v1 summary.
+4. `app/layout.tsx` `metadata.title` names *this* app, not the scaffold default.
+5. `refinementQuestions:listOpen` shows zero open rows.
+6. You re-read the error logs and tailed feature-requests for ~60s after shipping (users click "request a feature" in the first minute; don't yield before then).
 
 ---
 
@@ -130,12 +133,18 @@ The dev scaffold does **not** pre-wire deployment. When the user says "deploy it
 
 ```bash
 npm install @convex-dev/static-hosting
-npx @convex-dev/static-hosting setup     # interactive wizard
+npx @convex-dev/static-hosting setup     # interactive wizard — USE THIS, see note
 npx convex login                         # if needed
-npm run deploy                           # prints the public https://<deployment>.convex.site URL
+npx convex deploy -y                     # the -y is required (see note); pushes backend to prod
+npx @convex-dev/static-hosting upload --build --prod --dist ./out   # build + upload the static site
 ```
 
-Pass the printed URL back to the user. **Don't run this proactively** — the dev bootstrap skips it on purpose (the install step had a hang rate).
+The deploy prints the public `https://<deployment>.convex.site` URL — pass it back to the user. **Don't run this proactively** — the dev bootstrap skips it on purpose (the install step had a hang rate).
+
+Three sharp edges this avoids (all observed in real runs):
+- **Use the interactive `setup` wizard — do NOT hand-copy the static-hosting README's "Manual Setup" snippet.** The README is out of date vs the CLI: it exports only the singular functions, but `upload` calls the plural batch functions (`generateUploadUrls`, `recordAssets`) plus `getCurrentDeployment`, so a manual setup fails with `Could not find function for 'staticHosting:generateUploadUrls'`. The wizard generates the correct `convex/staticHosting.ts`.
+- **`npm run deploy` / the wizard's deploy shells out to `npx convex deploy` *without* `-y`**, which then dies with `Cannot prompt for input in non-interactive terminals`. Run the two commands above yourself with `-y` instead of `npm run deploy`.
+- **Auth keys don't carry to prod.** If the app uses Convex Auth, set `JWT_PRIVATE_KEY` / `JWKS` / `SITE_URL` on the **prod** deployment before this (set `SITE_URL` to the public origin, not localhost). Pass a multi-line PEM as `"$(cat key.pem)"` — `env set` mangles pasted newlines silently. Then verify with `npx convex env list --prod`.
 
 ---
 
