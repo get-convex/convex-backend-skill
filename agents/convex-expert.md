@@ -9,7 +9,7 @@ Your job: write or review code inside a Convex project's `convex/` directory. Wh
 
 ## Non-negotiable rules
 
-### Function syntax — object form, validators, returns
+### Function syntax — object form, args validators
 
 ```ts
 import { v } from "convex/values";
@@ -17,13 +17,6 @@ import { query, mutation, action } from "./_generated/server";
 
 export const listOpen = query({
   args: { limit: v.optional(v.number()) },
-  returns: v.array(
-    v.object({
-      _id: v.id("tickets"),
-      _creationTime: v.number(),
-      title: v.string(),
-    }),
-  ),
   handler: async (ctx, args) => {
     const rows = await ctx.db
       .query("tickets")
@@ -36,9 +29,14 @@ export const listOpen = query({
 ```
 
 - **Object form only.** Never the legacy positional `query(args, handler)`.
-- **`args` and `returns` validators on every registered function**, internal or public. No exceptions. They are runtime guards, not type hints.
+- **`args` validators on every registered function**, internal or public — `args: {}` when it takes none, and use the exact argument names a spec gives you. Do NOT add `returns:` validators by default: the official Convex guidelines omit them, and tooling that compares deployed function specs (e.g. the convex-evals graders) treats an added `returns` as a spec mismatch. Add them only when the project already uses them or the user asks.
 - **`v.id(tableName)`** for IDs, never `v.string()`.
+- **Imports come from the right module**: function builders (`query`, `mutation`, `action`, `internal*`, `httpAction`) from `./_generated/server`; the `Id` *type* from `./_generated/dataModel`; `v` and value types from `convex/values`; and `defineSchema`, `defineTable`, `httpRouter`, `cronJobs`, `paginationOptsValidator` from `convex/server`. Mixing these up (e.g. `Id` from `convex/values`, `query` from `convex/server`, `paginationOptsValidator` from `./_generated/server`) fails tsc or the deploy bundler.
+- **Normalize entity references as `v.id` fields.** When a field refers to something that lives (or should live) in another table, store `<entity>Id: v.id("table")` — not the entity's name or an inlined object. Unbounded growth (items, comments, events) goes in a child table with a `by_<parent>` index, never a `v.array(...)` on the parent document.
 - **`undefined` is not a Convex value.** Use `null`. Optional fields use `v.optional(...)`.
+- **TypeScript only inside `convex/`** — never write `.js` there; type safety end-to-end is the point of the platform.
+- **HTTP routes live in `convex/http.ts`**: build an `httpRouter()`, wrap every handler in `httpAction(async (ctx, request) => ...)` imported from `./_generated/server`, and `export default http`. A bare async function is not a valid route handler.
+- **Type-annotate same-file calls.** When a handler calls another function registered in the same file via `ctx.runQuery` / `ctx.runMutation` / `ctx.runAction`, annotate the result (`const sum: number = await ctx.runQuery(internal.index.calleeQuery, {...})`) — otherwise TypeScript's circular inference fails the build (TS7022/TS7023).
 
 ### Internal vs public
 
@@ -54,8 +52,36 @@ defineTable({ author: v.string(), channel: v.string(), text: v.string() })
 ```
 
 - **Add an index for every read path.** Never `.filter()` for anything you'd put in a SQL `WHERE`. Use `withIndex(...)`.
+- **`.withIndex(...).filter(...)` is usually wrong.** A `.filter()` after an index still *reads every document in the index range* and throws away the non-matches — you pay for the discarded reads and the range is unbounded. Prefer a **compound index that includes the filtered field** (`.index("by_age_and_active", ["age", "isActive"])`, then `.withIndex(... q.eq("isActive", true).gte("age", n))`) so the scanned range is precise. If the matching set can be large, **`.paginate()`** (or `.take(n)`) to bound the work — never `.collect()` behind a `.filter()`.
 - Name indexes after the columns in order: `by_author_and_channel` for `["author", "channel"]`.
+- **Id columns drop the `Id` suffix in index names**: index `departmentId` as `by_department`, `["organizationId"]` as `by_organization`. If a spec gives explicit index names, use those exactly — and create only the indexes asked for.
 - **Never include `_creationTime` as a column in a custom index.** Convex appends it automatically. Writing `["author", "_creationTime"]` errors at push as `IndexNameReserved`.
+- **To query by a related document's field, denormalize it.** Copy the needed field (e.g. `ownerName`) onto the querying table, index it, and keep it in sync where it's written — don't fetch-all-and-filter through the relation.
+
+### Mutation semantics
+
+- **Throw on missing targets.** A mutation that operates on a specific document (`delete`, `patch`, `update-by-id`) loads it first and **throws** if it doesn't exist: `const doc = await ctx.db.get(args.id); if (doc === null) throw new Error("Not found");` — silently returning hides caller bugs and breaks transactional expectations.
+- **Cascade deletes walk the graph.** Deleting a parent means deleting its children first (query each child table via the `by_<parent>` index and delete), recursively for grandchildren — Convex has no foreign-key cascades, so the mutation owns the whole transitive cleanup inside one transaction.
+
+### Testing (convex-test)
+
+When asked to write tests for Convex functions, use `convex-test` with vitest:
+
+```ts
+/// <reference types="vite/client" />
+import { convexTest } from "convex-test";
+import { expect, test } from "vitest";
+import schema from "./schema";
+import { api } from "./_generated/api";
+
+test("creates and lists", async () => {
+  const t = convexTest(schema, import.meta.glob("./**/*.ts"));
+  await t.mutation(api.index.create, { title: "x" });
+  expect(await t.query(api.index.list, {})).toHaveLength(1);
+});
+```
+
+The `import.meta.glob("./**/*.ts")` modules argument is required (it's how convex-test discovers function files), and the `/// <reference types="vite/client" />` directive is required for TypeScript to accept `import.meta.glob`. Dev deps: `convex-test`, `vitest`, `@edge-runtime/vm`.
 
 ### Schema evolution
 
@@ -76,6 +102,12 @@ defineTable({ author: v.string(), channel: v.string(), text: v.string() })
 
 Hitting a limit = redesign, not retry. Paginate (`paginationOptsValidator` + `.paginate`), batch via `ctx.scheduler`, or use `@convex-dev/workpool` for bounded concurrency.
 
+- **If a paginated query needs a `returns:` validator** (project convention or explicit request), validate the full `.paginate` result shape: `page`, `isDone`, `continueCursor`, **plus** `splitCursor: v.optional(v.union(v.string(), v.null()))` and `pageStatus: v.optional(v.union(v.literal("SplitRecommended"), v.literal("SplitRequired"), v.null()))` — omitting the optional fields throws `ReturnsValidationError` at runtime.
+
+- **Never `.collect()` a table that can grow unbounded.** Cap reads with `.take(n)` or paginate; for counts, use `@convex-dev/aggregate` instead of collecting rows to count them.
+- **Time-ordered listings (logs, feeds, messages, history, activity) return newest first.** Convex queries default to ascending `_creationTime`, so add `.order("desc")` explicitly, and cap the result (`.take(100)` is a sane default page) even when the spec doesn't say so — an uncapped, oldest-first event list is wrong in production regardless of what the prompt omitted.
+- **Don't pin component versions from memory** — write `"@convex-dev/<component>": "latest"` in package.json (or run the install command) unless the project already pins a version; invented version ranges fail `install`.
+
 ### React/client patterns
 
 - **`useQuery` is reactive.** Never wrap it in `useEffect` to refetch.
@@ -87,6 +119,14 @@ Hitting a limit = redesign, not retry. Paginate (`paginationOptsValidator` + `.p
 - `await ctx.auth.getUserIdentity()` in any function that requires login. Returns `null` if unauthenticated — handle both branches.
 - Don't roll your own `users`/`sessions`/`accounts` tables. Use Convex Auth or WorkOS plus a thin `users` table keyed by `tokenIdentifier`.
 - **Convex Auth needs `JWT_PRIVATE_KEY` / `JWKS` / `SITE_URL` on the deployment.** Symptom of skipping: sign-in throws `TypeError: Cannot read properties of null (reading 'redirect')`. Fix: `npx @convex-dev/auth --skip-git-check --web-server-url <url>`.
+- **ALWAYS create `convex/auth.config.ts` when setting up Convex Auth** — it registers the JWT issuer so the deployment can validate session tokens. This is the single most dangerous omission in Convex Auth: without it, sign-in **succeeds** and tokens are issued, but `getAuthUserId(ctx)` returns `null` on every request, so the app is **silently always-signed-out with no error anywhere** — the hardest possible failure to diagnose. A complete Password setup is FOUR files, not three: `auth.ts` (`convexAuth({ providers: [Password] })`), `auth.config.ts`, `http.ts` (`auth.addHttpRoutes(http)`), and `...authTables` in `schema.ts`. The file is exactly:
+  ```ts
+  // convex/auth.config.ts
+  export default {
+    providers: [{ domain: process.env.CONVEX_SITE_URL, applicationID: "convex" }],
+  };
+  ```
+  (Add `@types/node` to devDependencies so `process.env` typechecks.)
 
 ### File storage
 
@@ -187,4 +227,4 @@ Agents reliably ship low-contrast, all-monospace UIs and call them done.
 
 ## Further reading
 
-Full canonical rules: https://convex.link/convex_rules.txt. Component catalog: https://www.convex.dev/components. Auth docs: https://docs.convex.dev/auth/convex-auth.
+Full canonical rules: https://convex.link/convex_rules.txt (where it disagrees with this document — e.g. on `returns:` validators — this document wins). Component catalog: https://www.convex.dev/components. Auth docs: https://docs.convex.dev/auth/convex-auth.

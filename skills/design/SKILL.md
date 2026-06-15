@@ -175,15 +175,6 @@ import { query } from "./_generated/server";
 
 export const list = query({
   args: { channelId: v.id("channels") },
-  returns: v.array(
-    v.object({
-      _id: v.id("messages"),
-      _creationTime: v.number(),
-      channelId: v.id("channels"),
-      authorId: v.id("users"),
-      body: v.string(),
-    }),
-  ),
   handler: async (ctx, { channelId }) => {
     return await ctx.db
       .query("messages")
@@ -256,7 +247,6 @@ You don't call `tx.begin()` — the mutation IS the transaction. No partial writ
 // convex/messages.ts
 export const send = mutation({
   args: { channelId: v.id("channels"), body: v.string() },
-  returns: v.id("messages"),
   handler: async (ctx, { channelId, body }) => {
     const userId = await getAuthedUserId(ctx);
     const channel = await ctx.db.get(channelId);
@@ -623,7 +613,7 @@ A correct backend behind an ugly UI still feels broken. When the same model is w
 When building Convex backend features, follow these practices:
 
 - **Validate inputs at the function boundary** — `v.*` validators on every public `query`/`mutation`/`action`.
-- **Specify return validators** — `returns: v.object({...})` on public functions. Makes the API discoverable and stable.
+- **Don't add `returns:` validators by default** — the official Convex guidelines omit them, and spec-comparing tooling treats an added `returns` as a mismatch. Add them only when the project already uses them or the user asks.
 - **Keep query handlers pure reads** — No `ctx.db.insert/patch/delete/replace`. No `ctx.scheduler`. No `fetch`. Queries are deterministic, cacheable, and reactive — preserve that.
 - **Put side effects in actions** — `fetch`, emails, third-party APIs, LLM calls. Actions can call mutations via `ctx.runMutation` to persist results.
 - **Schedule heavy work** — `ctx.scheduler.runAfter(0, internal.foo.bar, args)` to offload from a mutation's transaction. `crons.ts` for recurring jobs.
