@@ -85,6 +85,7 @@ Claude will pick the right Convex primitive or component, scaffold the schema, w
 | **Typecheck-on-edit hook** | Runs `tsc --noEmit` on the `convex/` project after every edit and feeds errors straight back into context — the deep backstop behind the lint gate. |
 | **Runtime-error monitor** | Streams `npx convex logs` and surfaces matched errors (TS / schema validation / runtime exceptions / OCC conflicts) as Claude notifications, so you find out about server-side failures the moment they happen. Self-guards on unlinked projects. |
 | **OCC / insights monitor** | Polls `npx convex insights` every 10 minutes and notifies only on *new* OCC conflicts or read-limit insights, with the fix playbook (shrink transactions, `@convex-dev/aggregate` for hot counters, `.withIndex()`/`.paginate()` for read limits). Cloud deployments with user-level auth only; silent otherwise. |
+| **Feature-request monitor** | During a `quickstart` build, watches the Chef panel's `featureRequests:listPending` and pushes a notification the moment the user submits a new request — even across turns — so the agent picks it up without babysitting a log. Notifies only on *new* requests; works on local/anonymous deployments too. |
 
 ## Capabilities
 
