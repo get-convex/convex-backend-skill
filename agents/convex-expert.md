@@ -52,6 +52,7 @@ defineTable({ author: v.string(), channel: v.string(), text: v.string() })
 ```
 
 - **Add an index for every read path.** Never `.filter()` for anything you'd put in a SQL `WHERE`. Use `withIndex(...)`.
+- **`.withIndex(...).filter(...)` is usually wrong.** A `.filter()` after an index still *reads every document in the index range* and throws away the non-matches — you pay for the discarded reads and the range is unbounded. Prefer a **compound index that includes the filtered field** (`.index("by_age_and_active", ["age", "isActive"])`, then `.withIndex(... q.eq("isActive", true).gte("age", n))`) so the scanned range is precise. If the matching set can be large, **`.paginate()`** (or `.take(n)`) to bound the work — never `.collect()` behind a `.filter()`.
 - Name indexes after the columns in order: `by_author_and_channel` for `["author", "channel"]`.
 - **Id columns drop the `Id` suffix in index names**: index `departmentId` as `by_department`, `["organizationId"]` as `by_organization`. If a spec gives explicit index names, use those exactly — and create only the indexes asked for.
 - **Never include `_creationTime` as a column in a custom index.** Convex appends it automatically. Writing `["author", "_creationTime"]` errors at push as `IndexNameReserved`.

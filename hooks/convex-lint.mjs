@@ -153,6 +153,8 @@ try {
 
   // --- HARD DENY rules ---------------------------------------------------
 
+  let withIndexFilterNote = null; // soft advisory (collected, emitted with warnings)
+
   // Rule 1: `.filter(q => … q.field(…))` on a Convex db query. The
   // `q.field(` token inside the filter callback (same param name) is the
   // discriminator — a JS array `.filter` callback never calls `q.field(`.
@@ -175,7 +177,15 @@ try {
     const queryStart = before.lastIndexOf(".query(");
     const chain = queryStart >= 0 ? before.slice(queryStart) : before;
     if (/\.withIndex\s*\(/.test(chain)) {
-      // Indexed query with a secondary `.filter` predicate — canon-valid.
+      // Indexed query with a secondary `.filter` predicate — not denied (it's
+      // valid and convex-evals has a canonical answer using it), but it's
+      // usually a smell: `.filter` still reads every doc in the index range and
+      // discards non-matches. Advise (never block).
+      withIndexFilterNote =
+        "convex-lint: this `.withIndex(...).filter(...)` still reads every " +
+        "document in the index range and discards non-matches. Prefer a " +
+        "compound index that includes the filtered field, or `.paginate()` / " +
+        "`.take(n)` to bound the reads — never `.collect()` behind a `.filter()`.";
     } else {
       track("db_filter", "deny");
       deny(
@@ -344,6 +354,11 @@ try {
         `\`@convex-dev/aggregate\` for counts — \`.collect()\` loads every ` +
         `row and hits the ~16k-document read limit.`,
     );
+  }
+
+  if (withIndexFilterNote) {
+    if (firstWarningRule === null) firstWarningRule = "withindex_filter";
+    warnings.push(withIndexFilterNote);
   }
 
   if (warnings.length > 0) {
