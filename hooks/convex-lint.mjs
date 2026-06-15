@@ -156,20 +156,38 @@ try {
   // Rule 1: `.filter(q => … q.field(…))` on a Convex db query. The
   // `q.field(` token inside the filter callback (same param name) is the
   // discriminator — a JS array `.filter` callback never calls `q.field(`.
+  //
+  // Exception (canon-valid): `.withIndex(...).filter((q) => q.eq(q.field(...)))`
+  // is correct — the index narrows the scan and `.filter` applies a secondary
+  // predicate on the already-narrowed range (see convex-evals' own
+  // `index_and_filter` task). Only the *unindexed* form — a `.filter` with no
+  // `.withIndex` earlier in the same query chain — is the full-table scan we
+  // deny. Guard: require that no `.withIndex(` appears in the chain text from
+  // the enclosing `.query(`/`.db.query(` up to the matched `.filter(`.
   const dbFilterRe =
     /\.filter\(\s*\(?\s*(\w+)\s*\)?\s*=>[\s\S]{0,200}?\b\1\.field\(/;
   const dbFilterMatch = dbFilterRe.exec(projected);
   if (dbFilterMatch) {
-    track("db_filter", "deny");
-    deny(
-      `convex-lint rule ".filter on a db query": this write contains ` +
-        `\`${snippet(dbFilterMatch[0])}\` — \`.filter\` scans the whole ` +
-        `table on every call. Use ` +
-        `\`.withIndex("by_...", q => q.eq(...))\` with an index defined in ` +
-        `convex/schema.ts instead. Define the index with ` +
-        `\`.index("by_<field>", ["<field>"])\` on the table, then query it ` +
-        `via \`.withIndex\`.`,
-    );
+    // Find the chain start (nearest `.query(` before this `.filter(`) and check
+    // whether a `.withIndex(` sits between it and the filter — if so, allow.
+    const filterIdx = dbFilterMatch.index;
+    const before = projected.slice(0, filterIdx);
+    const queryStart = before.lastIndexOf(".query(");
+    const chain = queryStart >= 0 ? before.slice(queryStart) : before;
+    if (/\.withIndex\s*\(/.test(chain)) {
+      // Indexed query with a secondary `.filter` predicate — canon-valid.
+    } else {
+      track("db_filter", "deny");
+      deny(
+        `convex-lint rule ".filter on a db query": this write contains ` +
+          `\`${snippet(dbFilterMatch[0])}\` — \`.filter\` scans the whole ` +
+          `table on every call. Use ` +
+          `\`.withIndex("by_...", q => q.eq(...))\` with an index defined in ` +
+          `convex/schema.ts instead. Define the index with ` +
+          `\`.index("by_<field>", ["<field>"])\` on the table, then query it ` +
+          `via \`.withIndex\`.`,
+      );
+    }
   }
 
   // Rule 2: old positional function syntax, e.g. `query(async (ctx, …) => …)`.
@@ -239,7 +257,17 @@ try {
   // `Id<"table">` from ./_generated/dataModel, and document shapes flow from
   // the schema. Carefully excludes the legitimate `v.any()` validator (that's
   // a value, `: v.any()` / `v.any(` — never a bare `any` type annotation).
-  const anyTypeRe = /:\s*any\b|<\s*any\s*>|\bas\s+any\b|\bany\s*\[\s*\]/;
+  //
+  // The trailing two alternations close a gap: `any` used as a *generic type
+  // argument that is not the sole token* — `Record<string, any>`,
+  // `Map<K, any>`, `Promise<Foo, any>` (`,\s*any\s*[,>]`) and `any` as the
+  // first of several args, `ReadonlyArray<any, …>` (`<\s*any\s*,`). The
+  // original `<\s*any\s*>` only caught `any` as the *whole* argument list
+  // (`Promise<any>`, `Array<any>`), so `Record<string, any>` slipped through
+  // even though no-explicit-any flags it identically. Still never matches
+  // `v.any()`, which is a call expression (parentheses), not a `<…>` arg.
+  const anyTypeRe =
+    /:\s*any\b|<\s*any\s*>|\bas\s+any\b|\bany\s*\[\s*\]|,\s*any\s*[,>]|<\s*any\s*,/;
   // Guard: ignore matches that are actually `: v.any()` style (value, not type).
   const strippedForAny = projected.replace(/\bv\.any\s*\(\s*\)/g, "v.__validator__()");
   const anyMatch = anyTypeRe.exec(strippedForAny);
@@ -253,6 +281,32 @@ try {
         `ids as \`Id<"table">\` (from ./_generated/dataModel), and let document ` +
         `shapes flow from the schema. (\`v.any()\` the validator is fine — this ` +
         `is about \`any\` as a type annotation.)`,
+    );
+  }
+
+  // Rule 5: the `as unknown as X` double-cast — the canonical TypeScript
+  // escape hatch for forcing one type onto an unrelated value. It defeats the
+  // type system exactly as `as any` does (and is precisely what people reach
+  // for to dodge the no-explicit-any rule), so it is the same class of unsafe
+  // cast. In convex/ function code it is never necessary: ctx/handler/document
+  // types all flow from the schema and ./_generated, so a forced reinterpret
+  // is always a sign the real types are wrong. The token `as unknown as`
+  // (two `as` straddling `unknown`) is the discriminator — a lone
+  // `value as unknown` is occasionally legitimate (widening before a guard),
+  // but the *double* cast is unambiguously a reinterpret hatch.
+  const doubleCastRe = /\bas\s+unknown\s+as\b/;
+  const doubleCastMatch = doubleCastRe.exec(projected);
+  if (doubleCastMatch) {
+    track("double_cast", "deny");
+    deny(
+      `convex-lint rule "as unknown as cast": this write contains ` +
+        `\`${snippet(doubleCastMatch[0])}\` — the \`as unknown as X\` ` +
+        `double-cast forces an unrelated type the same way \`as any\` does and ` +
+        `is never needed in Convex function code, where ctx, handler results, ` +
+        `and document shapes already flow from the schema and ./_generated. ` +
+        `Fix the underlying type (annotate \`ctx\` as ` +
+        `\`QueryCtx\`/\`MutationCtx\`/\`ActionCtx\`, ids as \`Id<"table">\`) ` +
+        `instead of reinterpreting through \`unknown\`.`,
     );
   }
 
