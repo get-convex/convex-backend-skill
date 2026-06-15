@@ -232,6 +232,30 @@ try {
     );
   }
 
+  // Rule 4: explicit TypeScript `any` in a convex/ source file. Convex's
+  // eslint config bans @typescript-eslint/no-explicit-any, so this fails the
+  // lint gate every time — and it's never necessary in function code: ctx is
+  // `QueryCtx`/`MutationCtx`/`ActionCtx` from ./_generated/server, ids are
+  // `Id<"table">` from ./_generated/dataModel, and document shapes flow from
+  // the schema. Carefully excludes the legitimate `v.any()` validator (that's
+  // a value, `: v.any()` / `v.any(` — never a bare `any` type annotation).
+  const anyTypeRe = /:\s*any\b|<\s*any\s*>|\bas\s+any\b|\bany\s*\[\s*\]/;
+  // Guard: ignore matches that are actually `: v.any()` style (value, not type).
+  const strippedForAny = projected.replace(/\bv\.any\s*\(\s*\)/g, "v.__validator__()");
+  const anyMatch = anyTypeRe.exec(strippedForAny);
+  if (anyMatch) {
+    track("explicit_any", "deny");
+    deny(
+      `convex-lint rule "explicit any": this write uses the TypeScript \`any\` ` +
+        `type (\`${snippet(anyMatch[0])}\`). Convex's lint gate bans it and it's ` +
+        `never needed in function code — type \`ctx\` as ` +
+        `\`QueryCtx\`/\`MutationCtx\`/\`ActionCtx\` (from ./_generated/server), ` +
+        `ids as \`Id<"table">\` (from ./_generated/dataModel), and let document ` +
+        `shapes flow from the schema. (\`v.any()\` the validator is fine — this ` +
+        `is about \`any\` as a type annotation.)`,
+    );
+  }
+
   // --- SOFT WARNINGS (never deny) ----------------------------------------
   // Heuristic: each `query({`-style block whose first ~300 chars contain no
   // `args:` gets one advisory line. Deliberately args-only: the official
