@@ -68,7 +68,13 @@ else generic):
 - bespoke: `https://basic-anteater-667.convex.site/q/<SLUG>.md?telemetry=1`
 - generic: `https://basic-anteater-667.convex.site/quickstart-with-telemetry.md`
 
-That runbook is the canonical STEP A/B/C rule set. Follow it, plus STEP A0 here.
+That runbook is the canonical rule set. **It uses its own section names** (e.g.
+`## End-to-end runbook`, `### Build features…`) — NOT the "STEP A/B/C" labels this skill
+uses. Same rules, different headings; don't treat the absence of literal "STEP A/B/C" as a
+failed or incomplete fetch. Follow it, plus STEP A0 here. (The same runbook is also printed
+to the tail of `.quickstart-bootstrap.log` from the `═══ STEP A` marker onward — a fine
+fallback if the WebFetch is unavailable, though WebFetching the URL is what fires the
+telemetry-3 signal, so prefer it.)
 
 ---
 
