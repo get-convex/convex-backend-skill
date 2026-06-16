@@ -90,17 +90,20 @@ subagent (give it the exact contents below — they are version-pinned). Post a
 ### A0.1 — Install the pinned build + peer dep
 
 ```bash
-npm i https://pkg.pr.new/@convex-dev/auth@ed481f5 @auth/core@0.41.1
+npm i https://pkg.pr.new/@convex-dev/auth@ed481f5 @auth/core@0.41.1 jose
 ```
 
-`@simplewebauthn/browser` and `@simplewebauthn/server` ship inside that build — no extra
-install. `@auth/core@0.41.1` is the one peer dep the scaffold doesn't already have.
+`@simplewebauthn/browser` and `@simplewebauthn/server` ship inside the auth build — no
+extra install. `@auth/core@0.41.1` is the one peer dep the scaffold doesn't already have.
+**Install `jose` explicitly** (even though the auth build depends on it): the scaffold may
+use pnpm, whose strict `node_modules` does NOT hoist transitive deps to the top level, so
+`jose` wouldn't be resolvable from your key-gen script otherwise.
 
 ### A0.2 — Generate auth keys and set deployment env vars
 
 Convex Auth needs `JWT_PRIVATE_KEY`, `JWKS`, and `SITE_URL` on the dev deployment. The
 interactive `npx @convex-dev/auth` wizard is flaky in this harness — generate the keys
-deterministically with the `jose` that just got installed, then set the env vars.
+deterministically with `jose` (installed in A0.1), then set the env vars.
 
 ```bash
 node -e '
@@ -292,3 +295,43 @@ in parallel and narrate through the Chef panel (STEP B), publish only when asked
 
 The base quickstart's pre-yield checklist applies, plus one extra: **the running page
 shows the passkey sign-in UI and, after you register a test passkey, the authed view.**
+
+---
+
+## STEP C0 — deploying a passkey app (only when the user says "deploy"/"publish")
+
+The base quickstart's STEP C (`@convex-dev/static-hosting`) is written for **Vite**, and
+passkeys add prod-only config. Do NOT just run the bundled wizard — it's wrong for Next.js
+and silently skips an existing `http.ts`. Wire it as below. (This is the recipe; only run
+it when the user explicitly asks to deploy.)
+
+**1. Prod env vars — generate FRESH keys for prod** (don't reuse the dev key pair). Re-run
+the A0.2 `jose` snippet, then set FIVE vars on the prod deployment. Set them with the
+`NAME=VALUE` form (or the MCP `envSet` tool) — **never** `env set NAME "$VALUE"`, because
+`JWT_PRIVATE_KEY` starts with `-----BEGIN …` and the CLI parses a leading `-` as an
+unknown flag:
+
+```bash
+npx convex env set --prod "JWT_PRIVATE_KEY=$JWT"      # NAME=VALUE form, not a separate arg
+npx convex env set --prod "JWKS=$JWKS"
+npx convex env set --prod "SITE_URL=https://your-app.convex.site"
+npx convex env set --prod "AUTH_PASSKEY_RP_ID=your-app.convex.site"   # registrable domain, no scheme/port
+npx convex env set --prod "AUTH_PASSKEY_ORIGIN=https://your-app.convex.site"
+```
+
+On localhost `RP_ID`/`ORIGIN` default from `SITE_URL`, but in prod set them explicitly —
+a passkey is bound to its RP ID, so a mismatch means existing passkeys won't authenticate.
+
+**2. Next.js static export** (the scaffold is Next, not Vite). In `next.config.*`:
+`output: "export"`, `images: { unoptimized: true }`, `eslint: { ignoreDuringBuilds: true }`.
+Static export emits to **`out/`** (not `dist/`), and the client env var is
+**`NEXT_PUBLIC_CONVEX_URL`** (not `VITE_CONVEX_URL`).
+
+**3. Wire static hosting manually** (the bundled `setup`/`deploy` CLI is Vite-only):
+add the `staticHosting` component to `convex/convex.config.ts`, register its routes in
+`convex/http.ts`, and upload the `out/` dir. The auth exact-path HTTP routes and the
+static-hosting `/` pathPrefix **coexist** — auth's exact paths take precedence, so you do
+NOT need to remove `auth.addHttpRoutes(http)`.
+
+If anything here drifts from the installed `@convex-dev/static-hosting` version, read its
+`dist/` to confirm the current dir/env-var names rather than guessing.
