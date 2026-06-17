@@ -136,7 +136,9 @@ multi-line key and JSON:
 - `SITE_URL` = the `OPEN_BROWSER_URL` from step 3 (e.g. `http://localhost:3000`)
 
 (CLI fallback if MCP isn't wired: `npx convex env set SITE_URL http://localhost:3000`,
-and for the key/JWKS read the JSON values and pass them quoted.) On localhost the passkey
+and for the key/JWKS use the **`NAME=VALUE`** form — `npx convex env set "JWT_PRIVATE_KEY=$JWT"`
+— **never** `env set JWT_PRIVATE_KEY "$JWT"`, because the value starts with `-----BEGIN` and
+the CLI parses a leading `-` as an unknown flag.) On localhost the passkey
 Relying Party ID defaults to hostname `localhost` and the origin defaults to `SITE_URL`,
 so **no `AUTH_PASSKEY_*` vars are needed for local dev.** Delete `.auth-keys.json` after.
 
