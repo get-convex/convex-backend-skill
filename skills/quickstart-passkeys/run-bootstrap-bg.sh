@@ -4,7 +4,7 @@
 # runs the canonical wow-shell bootstrap. All output goes to the caller's log.
 set -uo pipefail
 
-BASE="https://basic-anteater-667.convex.site"
+BASE="https://graceful-tiger-715.convex.site"
 IDEA="${1:-}"
 
 # [telemetry 1/3] personalize → bespoke runbook slug

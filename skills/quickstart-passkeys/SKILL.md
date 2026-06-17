@@ -39,7 +39,7 @@ Identical to `quickstart`. Run this in the background, redirect to
 `.quickstart-bootstrap.log`, keep the three telemetry calls:
 
 ```bash
-BASE="https://basic-anteater-667.convex.site"
+BASE="https://graceful-tiger-715.convex.site"
 IDEA='<the user'\''s one-sentence idea>'
 
 # [telemetry 1/3] personalize → bespoke runbook slug
@@ -65,8 +65,8 @@ below and the base quickstart runbook.
 Once `BOOTSTRAP_COMPLETE` is logged, WebFetch the runbook (bespoke if you got a SLUG,
 else generic):
 
-- bespoke: `https://basic-anteater-667.convex.site/q/<SLUG>.md?telemetry=1`
-- generic: `https://basic-anteater-667.convex.site/quickstart-with-telemetry.md`
+- bespoke: `https://graceful-tiger-715.convex.site/q/<SLUG>.md?telemetry=1`
+- generic: `https://graceful-tiger-715.convex.site/quickstart-with-telemetry.md`
 
 That runbook is the canonical rule set. **It uses its own section names** (e.g.
 `## End-to-end runbook`, `### Build features…`) — NOT the "STEP A/B/C" labels this skill
@@ -308,87 +308,59 @@ shows the passkey sign-in UI and, after you register a test passkey, the authed 
 
 ## STEP C0 — deploying a passkey app (only when the user says "deploy"/"publish")
 
-The base quickstart's STEP C wizard is **Vite-oriented**; for this Next.js scaffold + passkeys
-wire it manually as below. **This recipe is verified against a live Next 16 + static-hosting
-deploy** — follow it rather than the package READMEs, which omit pieces. Only run it when the
-user explicitly asks to deploy.
+**EXPERIMENTAL — Chef 2.0 gateway.** This publishes the static site to
+`https://<APP>.convex.app` through the hosting **gateway** (build → zip → moderated upload),
+**not** static-hosting / `*.convex.site`. `<APP>` = your deployment name (the subdomain of
+`NEXT_PUBLIC_CONVEX_URL`). The passkey **auth HTTP routes stay on the deployment's
+`*.convex.site`**; only the page moves to `*.convex.app`. WebAuthn is origin-bound, so the
+passkey env vars must point at the **`.convex.app` page origin**, not `.convex.site`. Only
+run this when the user explicitly asks to deploy.
 
-**1. Prod env vars — generate FRESH keys for prod** (don't reuse the dev key pair). Re-run
-the A0.2 `jose` snippet, then set FIVE vars on prod. Use the `NAME=VALUE` form (or MCP
-`envSet`) — **never** `env set NAME "$VALUE"`, because `JWT_PRIVATE_KEY` starts with
-`-----BEGIN …` and the CLI parses a leading `-` as an unknown flag:
+**1. Auth env vars — bind passkeys to the `.convex.app` page origin.** Generate FRESH keys
+(re-run the A0.2 `jose` snippet), then set, using the `NAME=VALUE` form (never
+`env set NAME "$VALUE"` — `JWT_PRIVATE_KEY` starts with `-----BEGIN …` and the CLI reads a
+leading `-` as a flag). For a dev-deployment trial omit `--prod`; for prod add `--prod` and
+export a `CONVEX_DEPLOY_KEY`:
 
 ```bash
-npx convex env set --prod "JWT_PRIVATE_KEY=$JWT"      # NAME=VALUE form, not a separate arg
-npx convex env set --prod "JWKS=$JWKS"
-npx convex env set --prod "SITE_URL=https://your-app.convex.site"
-npx convex env set --prod "AUTH_PASSKEY_RP_ID=your-app.convex.site"   # registrable domain, no scheme/port
-npx convex env set --prod "AUTH_PASSKEY_ORIGIN=https://your-app.convex.site"
+npx convex env set "JWT_PRIVATE_KEY=$JWT"
+npx convex env set "JWKS=$JWKS"
+npx convex env set "SITE_URL=https://<APP>.convex.app"
+npx convex env set "AUTH_PASSKEY_RP_ID=<APP>.convex.app"        # the page's host — NOT .convex.site
+npx convex env set "AUTH_PASSKEY_ORIGIN=https://<APP>.convex.app"
 ```
 
-On localhost `RP_ID`/`ORIGIN` default from `SITE_URL`, but in prod set them explicitly — a
-passkey is bound to its RP ID, so a mismatch means existing passkeys won't authenticate.
+A passkey is bound to its RP ID; it MUST equal the host the page is served from
+(`<APP>.convex.app`) even though the auth endpoints live on `<APP>.convex.site`. A mismatch
+means registration/sign-in fails.
 
-**2. Deploy non-interactively — use a deploy key, NOT a PTY hack.** `npx convex deploy`
-prompts `push to prod? (Y/n)` and refuses non-TTY stdin, so in an agent/CI run it hangs.
-The fix is **`CONVEX_DEPLOY_KEY`**: generate a Production deploy key (Convex dashboard →
-Project Settings → Deploy keys), export it, and `convex deploy` runs without prompting. Do
-NOT spawn a pseudo-terminal to auto-answer the prompt.
-
-**3. Next.js static export** (the scaffold is Next, not Vite). `next.config.ts` is exactly:
-
+**2. Next.js static export** — `next.config.ts` is exactly:
 ```ts
 import type { NextConfig } from "next";
-const nextConfig: NextConfig = {
-  output: "export",
-  images: { unoptimized: true },
-};
+const nextConfig: NextConfig = { output: "export", images: { unoptimized: true } };
 export default nextConfig;
 ```
+⚠️ **Never silence the linter or type-checker to force a build** (`eslint.ignoreDuringBuilds`
+is also removed in Next 16, so it errors). Fix the real cause. Export emits to **`out/`**; the
+client env var is **`NEXT_PUBLIC_CONVEX_URL`**.
 
-⚠️ **Never silence the linter or the type-checker to get a build through.** Do NOT add
-`eslint: { ignoreDuringBuilds: true }` or `typescript: { ignoreBuildErrors: true }`, and
-do NOT use `any` / `@ts-ignore` / `eslint-disable` to paper over an error — fix the actual
-cause. (`eslint.ignoreDuringBuilds` is doubly wrong here: Next 16 removed the key, so it
-also errors.) If a lint or type error blocks the build, that's a real bug — resolve it.
-Static export emits to **`out/`** (not `dist/`); the client env var is
-**`NEXT_PUBLIC_CONVEX_URL`** (not `VITE_CONVEX_URL`).
+**3. Push the backend, then publish the static site through the gateway.** No
+`@convex-dev/static-hosting` component is needed — serving is the gateway's job. Keep
+`auth.addHttpRoutes(http)` in `convex/http.ts` as-is (auth endpoints stay on `.convex.site`):
 
-**4. Wire static hosting** (`@convex-dev/static-hosting`). Three files — register the
-component, expose the upload API, and keep the auth routes:
-
-`convex/convex.config.ts`:
-```ts
-import { defineApp } from "convex/server";
-import staticHosting from "@convex-dev/static-hosting/convex.config";
-const app = defineApp();
-app.use(staticHosting);
-export default app;
+```bash
+npx convex deploy                      # push auth functions + env (export CONVEX_DEPLOY_KEY for prod; for a dev trial, the running `convex dev` already pushed them — skip)
+curl -fsSL https://graceful-tiger-715.convex.site/publish-convex-app -o publish-convex-app.mjs
+npm install -D fflate
+node publish-convex-app.mjs            # build → zip out/ → moderated gateway upload
 ```
 
-`convex/staticHosting.ts` — **export the FULL upload API.** The upload CLI calls the *batch*
-functions `generateUploadUrls` / `recordAssets`, which the README's shorter destructure
-leaves out; omitting them makes the upload fail:
-```ts
-import { components } from "./_generated/api";
-import { exposeUploadApi, exposeDeploymentQuery } from "@convex-dev/static-hosting";
+It prints `https://<APP>.convex.app` — pass it back to the user. **If the gateway returns 403
+(content moderation),** it prints the reasons. A legitimate app sign-in page should pass; if
+the moderator flags the passkey login as phishing, that's a finding to **report**, not to
+evade.
 
-export const {
-  generateUploadUrl, generateUploadUrls, recordAsset, recordAssets, gcOldAssets, listAssets,
-} = exposeUploadApi(components.staticHosting);
-export const { getCurrentDeployment } = exposeDeploymentQuery(components.staticHosting);
-```
-
-Leave `auth.addHttpRoutes(http)` in `convex/http.ts` as-is — the auth exact-path routes and
-the static-hosting `/` prefix **coexist** (auth's exact paths take precedence).
-
-**5. The deploy script** (`package.json`) — `convex deploy --cmd` injects the URL env var and
-runs the build, then the static-hosting CLI uploads `out/`:
-```json
-"deploy": "convex deploy --cmd-url-env-var-name NEXT_PUBLIC_CONVEX_URL --cmd 'npm run build' && npx @convex-dev/static-hosting upload --dist out --component staticHosting --prod"
-```
-With `CONVEX_DEPLOY_KEY` exported, `npm run deploy` runs end-to-end non-interactively and
-prints the public `https://<deployment>.convex.site` URL. Pass it back to the user.
-
-If anything drifts from the installed `@convex-dev/static-hosting` / Next version, read the
-package `dist/` to confirm current export/flag names rather than guessing.
+**4. Verify the passkey ceremony works cross-origin** — page on `.convex.app`, auth API on
+`.convex.site`. Open the URL, register a passkey, confirm the authed view loads. If
+registration fails with an RP-ID / origin error, the three env vars in step 1 don't match the
+`.convex.app` host — fix them and re-deploy the backend.
