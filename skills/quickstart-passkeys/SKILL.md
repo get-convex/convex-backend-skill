@@ -306,16 +306,15 @@ shows the passkey sign-in UI and, after you register a test passkey, the authed 
 
 ## STEP C0 — deploying a passkey app (only when the user says "deploy"/"publish")
 
-The base quickstart's STEP C (`@convex-dev/static-hosting`) is written for **Vite**, and
-passkeys add prod-only config. Do NOT just run the bundled wizard — it's wrong for Next.js
-and silently skips an existing `http.ts`. Wire it as below. (This is the recipe; only run
-it when the user explicitly asks to deploy.)
+The base quickstart's STEP C wizard is **Vite-oriented**; for this Next.js scaffold + passkeys
+wire it manually as below. **This recipe is verified against a live Next 16 + static-hosting
+deploy** — follow it rather than the package READMEs, which omit pieces. Only run it when the
+user explicitly asks to deploy.
 
 **1. Prod env vars — generate FRESH keys for prod** (don't reuse the dev key pair). Re-run
-the A0.2 `jose` snippet, then set FIVE vars on the prod deployment. Set them with the
-`NAME=VALUE` form (or the MCP `envSet` tool) — **never** `env set NAME "$VALUE"`, because
-`JWT_PRIVATE_KEY` starts with `-----BEGIN …` and the CLI parses a leading `-` as an
-unknown flag:
+the A0.2 `jose` snippet, then set FIVE vars on prod. Use the `NAME=VALUE` form (or MCP
+`envSet`) — **never** `env set NAME "$VALUE"`, because `JWT_PRIVATE_KEY` starts with
+`-----BEGIN …` and the CLI parses a leading `-` as an unknown flag:
 
 ```bash
 npx convex env set --prod "JWT_PRIVATE_KEY=$JWT"      # NAME=VALUE form, not a separate arg
@@ -325,19 +324,69 @@ npx convex env set --prod "AUTH_PASSKEY_RP_ID=your-app.convex.site"   # registra
 npx convex env set --prod "AUTH_PASSKEY_ORIGIN=https://your-app.convex.site"
 ```
 
-On localhost `RP_ID`/`ORIGIN` default from `SITE_URL`, but in prod set them explicitly —
-a passkey is bound to its RP ID, so a mismatch means existing passkeys won't authenticate.
+On localhost `RP_ID`/`ORIGIN` default from `SITE_URL`, but in prod set them explicitly — a
+passkey is bound to its RP ID, so a mismatch means existing passkeys won't authenticate.
 
-**2. Next.js static export** (the scaffold is Next, not Vite). In `next.config.*`:
-`output: "export"`, `images: { unoptimized: true }`, `eslint: { ignoreDuringBuilds: true }`.
-Static export emits to **`out/`** (not `dist/`), and the client env var is
+**2. Deploy non-interactively — use a deploy key, NOT a PTY hack.** `npx convex deploy`
+prompts `push to prod? (Y/n)` and refuses non-TTY stdin, so in an agent/CI run it hangs.
+The fix is **`CONVEX_DEPLOY_KEY`**: generate a Production deploy key (Convex dashboard →
+Project Settings → Deploy keys), export it, and `convex deploy` runs without prompting. Do
+NOT spawn a pseudo-terminal to auto-answer the prompt.
+
+**3. Next.js static export** (the scaffold is Next, not Vite). `next.config.ts` is exactly:
+
+```ts
+import type { NextConfig } from "next";
+const nextConfig: NextConfig = {
+  output: "export",
+  images: { unoptimized: true },
+};
+export default nextConfig;
+```
+
+⚠️ **Never silence the linter or the type-checker to get a build through.** Do NOT add
+`eslint: { ignoreDuringBuilds: true }` or `typescript: { ignoreBuildErrors: true }`, and
+do NOT use `any` / `@ts-ignore` / `eslint-disable` to paper over an error — fix the actual
+cause. (`eslint.ignoreDuringBuilds` is doubly wrong here: Next 16 removed the key, so it
+also errors.) If a lint or type error blocks the build, that's a real bug — resolve it.
+Static export emits to **`out/`** (not `dist/`); the client env var is
 **`NEXT_PUBLIC_CONVEX_URL`** (not `VITE_CONVEX_URL`).
 
-**3. Wire static hosting manually** (the bundled `setup`/`deploy` CLI is Vite-only):
-add the `staticHosting` component to `convex/convex.config.ts`, register its routes in
-`convex/http.ts`, and upload the `out/` dir. The auth exact-path HTTP routes and the
-static-hosting `/` pathPrefix **coexist** — auth's exact paths take precedence, so you do
-NOT need to remove `auth.addHttpRoutes(http)`.
+**4. Wire static hosting** (`@convex-dev/static-hosting`). Three files — register the
+component, expose the upload API, and keep the auth routes:
 
-If anything here drifts from the installed `@convex-dev/static-hosting` version, read its
-`dist/` to confirm the current dir/env-var names rather than guessing.
+`convex/convex.config.ts`:
+```ts
+import { defineApp } from "convex/server";
+import staticHosting from "@convex-dev/static-hosting/convex.config";
+const app = defineApp();
+app.use(staticHosting);
+export default app;
+```
+
+`convex/staticHosting.ts` — **export the FULL upload API.** The upload CLI calls the *batch*
+functions `generateUploadUrls` / `recordAssets`, which the README's shorter destructure
+leaves out; omitting them makes the upload fail:
+```ts
+import { components } from "./_generated/api";
+import { exposeUploadApi, exposeDeploymentQuery } from "@convex-dev/static-hosting";
+
+export const {
+  generateUploadUrl, generateUploadUrls, recordAsset, recordAssets, gcOldAssets, listAssets,
+} = exposeUploadApi(components.staticHosting);
+export const { getCurrentDeployment } = exposeDeploymentQuery(components.staticHosting);
+```
+
+Leave `auth.addHttpRoutes(http)` in `convex/http.ts` as-is — the auth exact-path routes and
+the static-hosting `/` prefix **coexist** (auth's exact paths take precedence).
+
+**5. The deploy script** (`package.json`) — `convex deploy --cmd` injects the URL env var and
+runs the build, then the static-hosting CLI uploads `out/`:
+```json
+"deploy": "convex deploy --cmd-url-env-var-name NEXT_PUBLIC_CONVEX_URL --cmd 'npm run build' && npx @convex-dev/static-hosting upload --dist out --component staticHosting --prod"
+```
+With `CONVEX_DEPLOY_KEY` exported, `npm run deploy` runs end-to-end non-interactively and
+prints the public `https://<deployment>.convex.site` URL. Pass it back to the user.
+
+If anything drifts from the installed `@convex-dev/static-hosting` / Next version, read the
+package `dist/` to confirm current export/flag names rather than guessing.
