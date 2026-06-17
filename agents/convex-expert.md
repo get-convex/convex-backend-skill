@@ -61,7 +61,9 @@ defineTable({ author: v.string(), channel: v.string(), text: v.string() })
 
 - **Add new fields as `v.optional(...)`** when the table has data. Required fields on existing rows = `Schema validation failed` on push.
 - Once backfilled, tighten back to required (re-push; Convex re-validates).
+- **Beware the required-field deadlock.** Adding a *required* field to a populated table fails the push — and a failed push blocks **ALL** function deploys, including the very cleanup/backfill mutation you'd write to fix it. Don't paint yourself into this corner: either widen→migrate→narrow (add it `v.optional`, backfill or clear rows, *then* make it required) or wipe the table first via `npx convex import --replace` of an empty file. Never add a bare required field to a table that already has rows.
 - Schema errors show up in `convex dev` stdout. Read the message; don't guess.
+- **dev→prod data migration:** use a full-snapshot `npx convex export` → `npx convex import --replace` (not per-table — that re-ids rows and breaks foreign keys; snapshot import preserves `_id`). Carry the `users`/`auth*` tables too so ownership resolves. Use `--replace`, not `--replace-all`, if any component (e.g. `@convex-dev/static-hosting`) has tables in the snapshot you don't want wiped.
 
 ### Resource limits — design around them
 
@@ -86,7 +88,14 @@ Hitting a limit = redesign, not retry. Paginate (`paginationOptsValidator` + `.p
 
 - `await ctx.auth.getUserIdentity()` in any function that requires login. Returns `null` if unauthenticated — handle both branches.
 - Don't roll your own `users`/`sessions`/`accounts` tables. Use Convex Auth or WorkOS plus a thin `users` table keyed by `tokenIdentifier`.
-- **Convex Auth needs `JWT_PRIVATE_KEY` / `JWKS` / `SITE_URL` on the deployment.** Symptom of skipping: sign-in throws `TypeError: Cannot read properties of null (reading 'redirect')`. Fix: `npx @convex-dev/auth --skip-git-check --web-server-url <url>`.
+- **Setting up Convex Auth? `convex/auth.config.ts` is MANDATORY — emit it every time, same turn as `auth.ts`.** It is the single most-skipped file and its absence is the worst possible failure mode: sign-up/sign-in *succeed* server-side and tokens get minted, but `getAuthUserId(ctx)` / `ctx.auth.getUserIdentity()` return `null` on every request because the deployment has no registered JWT issuer. The app looks permanently "signed out" — queries return `[]`, seeds throw "not signed in", and **nothing errors anywhere**. Auth is not wired until this file exists next to `auth.ts`, `http.ts`, and `authTables`:
+  ```ts
+  // convex/auth.config.ts
+  export default {
+    providers: [{ domain: process.env.CONVEX_SITE_URL, applicationID: "convex" }],
+  };
+  ```
+- **Convex Auth needs `JWT_PRIVATE_KEY` / `JWKS` / `SITE_URL` set on the deployment** — and these are **per-deployment: they do NOT carry from dev to prod.** Set them again on prod with/before the first prod deploy. Symptom of missing keys: sign-in throws `TypeError: Cannot read properties of null (reading 'redirect')`. Generate/set via `npx @convex-dev/auth --skip-git-check --web-server-url <url>`. When setting a multi-line PEM by hand, pass it as `"$(cat key.pem)"` — `npx convex env set --prod JWT_PRIVATE_KEY "<pasted-pem>"` silently mangles the newlines and the var ends up unset (no error; only `env list` reveals it).
 
 ### File storage
 
@@ -165,6 +174,7 @@ Convex is the backend. Before reaching for any of these, stop:
 | `IndexNameReserved` | Index named `by_id`, `by_creation_time`, or starts with `_` | Rename it |
 | `use node` in error | Imported a Node-only module into a default V8 file | Add `"use node";` at the top, or move to an action |
 | `TypeError: Cannot read properties of null (reading 'redirect')` | Convex Auth missing env keys | `npx @convex-dev/auth --skip-git-check --web-server-url <url>` |
+| App stuck "signed out" — sign-in succeeds, tokens mint, but `getAuthUserId`/`getUserIdentity` is always `null`, queries return `[]`, **no error** | `convex/auth.config.ts` was never created (no registered JWT issuer) | Create `convex/auth.config.ts` (see Auth section) and re-push |
 | `nonInteractiveError` / `Cannot prompt for input` | TTY-required prompt under a non-TTY harness | `CONVEX_AGENT_MODE=anonymous` before `npx convex dev` |
 
 ## Visual quality — don't ship grey-on-grey
@@ -180,6 +190,8 @@ Agents reliably ship low-contrast, all-monospace UIs and call them done.
 ## How you write code
 
 - **Write entire files.** No `// ... rest unchanged` placeholders.
+- **When you rewrite an existing file, preserve every export it already had.** Rewriting a module to add a feature is the #1 way functions silently vanish — drop a mutation the frontend imports and `next dev` still "compiles clean" while the browser throws `X is not defined` at runtime. Before you finish a rewrite, diff your exports against the prior version; a removed export must be deliberate, never incidental.
+- **Gate on `tsc --noEmit`, not "it compiled."** A clean Convex push and `next dev`'s loose HMR typecheck both miss whole classes of error — a dropped component, a `string` passed where a branded `Id<...>` is required, a render-only crash. These surface only in the browser overlay, never in the logs the bootstrap watchers tail. `tsc --noEmit` catches them; treat green tsc, not green HMR, as done.
 - **After writing**, let `convex dev` push and report. Fix TS / schema errors in place; re-push. Don't accumulate broken state.
 - **Verify the watchers fire.** Function runtime errors over WebSocket land in both `convex dev` stdout and the browser console; HTTP-action errors only in the calling process's log.
 - **Use the Convex MCP server when available.** Tools like `tables`, `function-spec`, `data`, `run-once-query`, `logs`, `env list/set/get` let you introspect the live deployment rather than guess from generated types.
