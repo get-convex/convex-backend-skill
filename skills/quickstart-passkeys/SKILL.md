@@ -22,6 +22,11 @@ Read the base `quickstart` skill's STEP A / B / C — they apply verbatim. This 
 documents the get-idea step, the scaffold, and the **new mandatory passkey step (A0)**
 that runs right after the scaffold and before you build the feature.
 
+> **You are reading this skill right now — its full instructions are below.** Do NOT
+> `find`/`grep` the filesystem for `SKILL.md` or "the skill file"; you already have it.
+> The canonical runbook you fetch in step 2 (and the log tail) is the *same* content with
+> different section headings — don't re-hunt for it either.
+
 ---
 
 ## 1. Get the idea
@@ -34,6 +39,13 @@ after there are pixels on screen.
 ---
 
 ## 2. Scaffold the wow-shell (and emit telemetry)
+
+> **First check: did the `/quickstart-passkeys` command's pre-exec already launch it?**
+> If you saw `SCAFFOLD_LAUNCHED`, `SCAFFOLD_ALREADY_RUNNING`, or `SCAFFOLD_ALREADY_DONE`,
+> the scaffold is already running/done — **do NOT run the block below** (a second run races
+> the first and spawns duplicate `convex dev`/`next dev`/watchers). Just poll
+> `.quickstart-bootstrap.log` for `BOOTSTRAP_COMPLETE`. Only run the block if you were
+> invoked as the bare skill with no scaffold yet in flight.
 
 Identical to `quickstart`. Run this in the background, redirect to
 `.quickstart-bootstrap.log`, keep the three telemetry calls:
@@ -86,14 +98,27 @@ user watches the app come together.
 
 ---
 
-## STEP A0 — force the passkeys auth build and wire WebAuthn (MANDATORY, runs first)
+## STEP A0 — passkey auth is PRE-BAKED; verify it, then add the sign-in button
 
-Do this **immediately after `BOOTSTRAP_COMPLETE` and before building the feature**, in
-the scaffold directory. Delegate all `convex/` file writes to the **`convex-expert`**
-subagent (give it the exact contents below — they are version-pinned). Post a
-`progress:post` ("Adding passkey login") and seed a todo for it so the user sees it.
+**The passkeys bootstrap already did the heavy, identical-every-run wiring for you:**
+installed `@convex-dev/auth@ed481f5` + peers, wrote `convex/auth.ts`,
+`convex/auth.config.ts`, `convex/http.ts`, spread `...authTables` into
+`convex/schema.ts`, swapped the provider to `ConvexAuthProvider`, and set
+`JWT_PRIVATE_KEY` / `JWKS` / `SITE_URL` on the dev deployment.
 
-### A0.1 — Install the pinned build + peer dep
+**So A0 is now just two quick things:**
+1. **Verify** the pre-bake: those `convex/auth*.ts` + `http.ts` files exist, `schema.ts`
+   has `...authTables`, and `…/convex-errors.log` is clean. If the bootstrap log printed a
+   `passkeys: … failed` warning, run *only that* step from the **Fallback** below.
+2. **Add the `PasskeyButton`** (A0.4) and gate your feature's content on auth state.
+
+Post a `progress:post` ("Passkey login ready") and seed a todo so the user sees it. Then
+go straight to A0.4 — **skip A0.1–A0.3, they are the Fallback** (only for when the
+bootstrap warned a pre-bake step failed).
+
+---
+
+### Fallback A0.1 — Install the pinned build + peer dep (only if pre-bake failed)
 
 ```bash
 npm i https://pkg.pr.new/@convex-dev/auth@ed481f5 @auth/core@0.41.1 jose
@@ -306,15 +331,23 @@ shows the passkey sign-in UI and, after you register a test passkey, the authed 
 
 ---
 
-## STEP C0 — deploying a passkey app (only when the user says "deploy"/"publish")
+## STEP C0 — publish to convex.app (MANDATORY terminal step of this flow)
+
+> **This is a test build of the Chef 2.0 gateway — publishing is the whole point, so it is
+> REQUIRED, not optional.** At the START of the build, seed a non-skippable todo
+> ("Publish to convex.app") via `todos:plan` and keep it `pending`. You may NOT yield the
+> final turn until you have run this publish, captured the live `https://<APP>.convex.app`
+> URL, advanced that todo to `done`, and sent the user a closing message containing the URL
+> (and the passkey-test result). A run that stops mid-feature with no published URL is a
+> FAILED run. (This overrides the base runbook's "publish only when asked" — that's for the
+> prod flow; here, always finish by publishing.)
 
 **EXPERIMENTAL — Chef 2.0 gateway.** This publishes the static site to
 `https://<APP>.convex.app` through the hosting **gateway** (build → zip → moderated upload),
 **not** static-hosting / `*.convex.site`. `<APP>` = your deployment name (the subdomain of
 `NEXT_PUBLIC_CONVEX_URL`). The passkey **auth HTTP routes stay on the deployment's
 `*.convex.site`**; only the page moves to `*.convex.app`. WebAuthn is origin-bound, so the
-passkey env vars must point at the **`.convex.app` page origin**, not `.convex.site`. Only
-run this when the user explicitly asks to deploy.
+passkey env vars must point at the **`.convex.app` page origin**, not `.convex.site`.
 
 **1. Auth env vars — bind passkeys to the `.convex.app` page origin.** Generate FRESH keys
 (re-run the A0.2 `jose` snippet), then set, using the `NAME=VALUE` form (never

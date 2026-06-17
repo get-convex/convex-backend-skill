@@ -18,5 +18,11 @@ echo "SLUG=$SLUG"
 QB="$(mktemp -t convex-qb-XXXX.sh)"
 curl -fsS --max-time 20 "$BASE/quickstart-bootstrap" -o "$QB" || { echo "BOOTSTRAP_FETCH_FAILED"; exit 3; }
 
-# [telemetry 2/3] run WITH the slug
-bash "$QB" $SLUG
+# [telemetry 2/3] run WITH the slug.
+# QB_PASSKEYS=1 tells the bootstrap to pre-bake the @convex-dev/auth (pinned)
+# backend + provider + keys, so the agent's STEP A0 is reduced to adding the
+# sign-in button instead of re-doing ~half the session of identical wiring.
+# QB_FEEDBACK=1 swaps the inline chef panel for the @convex-dev/feedback
+# component; QB_FEEDBACK_URL pins the moderation gate + served <chef-panel> to
+# the SAME anteater this bootstrap came from (so the panel JS resolves).
+QB_PASSKEYS=1 QB_FEEDBACK=1 QB_FEEDBACK_URL="$BASE/feedback" bash "$QB" $SLUG
