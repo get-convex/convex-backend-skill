@@ -87,12 +87,12 @@ Don't declare a feature "done" off a single tail. Re-read these files right befo
 
 ## STEP B — build the idea live
 
-**Write all `convex/` code yourself — don't delegate to a separate subagent.** New tables, queries, mutations, actions, indexes for the user's feature: write them directly following the backend rules so they push cleanly the first time — object-form syntax, validators on args AND returns, `.withIndex` not `.filter`, internal-vs-public. You own the product decisions, the UI, the live narration, AND backend correctness. (Past runs lost time when a mandated `convex-expert` subagent wasn't registered in this plugin and the build stalled waiting on it.)
+**Delegate all `convex/` code to the `convex-expert` subagent.** New tables, queries, mutations, actions, indexes for the user's feature — hand them to `convex-expert` so they push cleanly the first time (object-form syntax, validators, `.withIndex` not `.filter`, internal-vs-public). You own the product decisions, the UI, and the live narration; the subagent owns backend correctness.
 
 **Build visible-first, backend-in-parallel — this is the #1 perceived-latency rule.**
 
-1. **Static UI first.** `app/page.tsx` renders the *full* feature layout with hardcoded sample data in your first edit. The user sees real pixels in ~30s. **`app/page.tsx` and `app/layout.tsx` were written by the bootstrap, not by you** — `Read` each once (`limit: 1` is fine) before your first `Write`, or the harness rejects the write with "File has not been read yet."
-2. **Backend right after.** Write the schema + queries, then swap the hardcoded constants for `useQuery(...)` once the query exists.
+1. **Static UI first.** `app/page.tsx` renders the *full* feature layout with hardcoded sample data in your first edit. The user sees real pixels in ~30s.
+2. **Backend right after**, via `convex-expert`. Swap the hardcoded constants for `useQuery(...)` once the query exists.
 3. **Interactivity (drag, animation) last**, after real IDs exist.
 
 If your todo list starts with "schema" before "static UI", reorder it.
@@ -115,7 +115,7 @@ If your todo list starts with "schema" before "static UI", reorder it.
 
 **Edit order: write a new component file *first*, then reference it in `app/page.tsx`** in the same turn — otherwise HMR recompiles between the two writes and the live page flashes a `ReferenceError`.
 
-**After any UI edit, run `npx tsc --noEmit` — "it compiled" is not enough.** The bootstrap's log watchers tail the Convex and Next *terminal* logs, but a client-only render crash (a dropped component → `X is not defined`, a `string` where a branded `Id<...>` is required) shows **only in the browser overlay** — never in those logs. `next dev`'s loose HMR typecheck misses this whole class; a clean `tsc --noEmit` is the gate. This is doubly important right after you rewrite a backend file (it's easy to silently drop an export the page imports — a green push hides it).
+**After any UI edit, run `npx tsc --noEmit` — "it compiled" is not enough.** The bootstrap's log watchers tail the Convex and Next *terminal* logs, but a client-only render crash (a dropped component → `X is not defined`, a `string` where a branded `Id<...>` is required) shows **only in the browser overlay** — never in those logs. `next dev`'s loose HMR typecheck misses this whole class; a clean `tsc --noEmit` is the gate. This is doubly important right after the `convex-expert` subagent rewrites a file (it can silently drop an export the page imports — a green push hides it).
 
 **Pre-yield checklist — verify ALL before your final message:**
 1. `npx tsc --noEmit` is clean (catches dropped components / `Id` type errors the log watchers never see).

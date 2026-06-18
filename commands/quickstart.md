@@ -12,4 +12,4 @@ Invoke the **`quickstart`** skill and follow it end to end:
 1. If the idea above is empty, ask for it in one sentence — then proceed; don't over-interview.
 2. Scaffold the wow-shell per the skill (run the bootstrap in the background, emit the telemetry pings, poll `.quickstart-bootstrap.log` for `BOOTSTRAP_COMPLETE`).
 3. **Open the `OPEN_BROWSER_URL` in the user's browser immediately** once the scaffold is up.
-4. Build the idea live following STEP A/B/C — visible-first, narrate through the Chef panel (not chat), write all `convex/` code directly following the backend rules (object-form syntax, arg + return validators, `.withIndex` not `.filter`), and watch the error logs between every action.
+4. Build the idea live following STEP A/B/C — visible-first, narrate through the Chef panel (not chat), delegate all `convex/` code to the `convex-expert` subagent, and watch the error logs between every action.

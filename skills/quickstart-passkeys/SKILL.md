@@ -167,7 +167,7 @@ the CLI parses a leading `-` as an unknown flag.) On localhost the passkey
 Relying Party ID defaults to hostname `localhost` and the origin defaults to `SITE_URL`,
 so **no `AUTH_PASSKEY_*` vars are needed for local dev.** Delete `.auth-keys.json` after.
 
-### A0.3 — Backend wiring (write these exact files yourself)
+### A0.3 — Backend wiring (hand these exact files to `convex-expert`)
 
 `convex/auth.config.ts`:
 ```ts
@@ -324,7 +324,7 @@ From here, follow the base `quickstart` runbook **exactly** (the one you WebFetc
 step 2): watch the logs between every action (STEP A), build visible-first with backend
 in parallel and narrate through the Chef panel (STEP B), publish only when asked
 (STEP C). When you gate features on the signed-in user, read it from
-`auth.getUserId(ctx)` in your Convex functions.
+`auth.getUserId(ctx)` in your Convex functions (delegate to `convex-expert`).
 
 The base quickstart's pre-yield checklist applies, plus one extra: **the running page
 shows the passkey sign-in UI and, after you register a test passkey, the authed view.**
