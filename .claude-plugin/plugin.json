@@ -2,8 +2,8 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "convex",
   "displayName": "Convex",
-  "version": "1.3.0",
-  "description": "Bundled design + quickstart skills, code-writing subagent, lint+typecheck guard hooks, runtime-error and OCC-insights monitors, and MCP server for live deployment introspection. Scaffold a running app from one sentence, then build reactive, type-safe backends on one platform — schema, real-time, auth, file storage, scheduled jobs, and AI agents.",
+  "version": "1.4.0",
+  "description": "Bundled design + quickstart skills, code-writing and code-review subagents, lint+typecheck guard hooks, runtime-error and OCC-insights monitors, and MCP server for live deployment introspection. The quickstart scaffolds a running app from one sentence and builds it live LOCALLY, narrated in chat; the convex-reviewer subagent audits Convex functions for auth, validators, and performance. Build reactive, type-safe backends on one platform — schema, real-time, file storage, scheduled jobs, and AI agents.",
   "author": {
     "name": "Convex",
     "url": "https://convex.dev"
@@ -14,7 +14,8 @@
   "skills": "./skills/",
   "commands": "./commands/",
   "agents": [
-    "./agents/convex-expert.md"
+    "./agents/convex-expert.md",
+    "./agents/convex-reviewer.md"
   ],
   "mcpServers": "./.mcp.json",
   "experimental": {
