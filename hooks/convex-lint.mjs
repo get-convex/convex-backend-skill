@@ -113,9 +113,19 @@ try {
   if (!isConvexTs) emit(null);
 
   // --- Compute the projected file content -------------------------------
+  // `projected` is the full post-edit file, used for CHAIN CONTEXT (e.g. to
+  // see a `.withIndex(...)` that precedes a `.filter(...)` even when it lies
+  // outside the edited hunk). `originalContent` is the pre-edit file — the
+  // hard-deny rules only fire on an offending pattern whose surrounding
+  // context is NOT already in the original, so a pre-existing issue elsewhere
+  // never blocks an unrelated edit. `addedText` (the new_strings) drives the
+  // soft advisories. For Write, originalContent is "" (whole file is new).
   let projected = null;
+  let addedText = "";
+  let originalContent = "";
   if (toolName === "Write") {
     projected = typeof toolInput.content === "string" ? toolInput.content : null;
+    addedText = typeof projected === "string" ? projected : "";
   } else if (toolName === "Edit" || toolName === "MultiEdit") {
     let current;
     try {
@@ -124,6 +134,7 @@ try {
       // File missing/unreadable: the tool will error on its own. Not our job.
       emit(null);
     }
+    originalContent = current;
     const edits =
       toolName === "MultiEdit"
         ? toolInput.edits
@@ -147,36 +158,72 @@ try {
       projected = edit?.replace_all
         ? projected.replaceAll(oldStr, newStr)
         : projected.replace(oldStr, newStr);
+      addedText += newStr + "\n";
     }
   }
   if (typeof projected !== "string") emit(null);
 
   // --- HARD DENY rules ---------------------------------------------------
 
-  // Rule 1: `.filter(q => … q.field(…))` on a Convex db query. The
-  // `q.field(` token inside the filter callback (same param name) is the
-  // discriminator — a JS array `.filter` callback never calls `q.field(`.
+  // Rule 1: `.filter(q => … q.field(…))` on a Convex db query. The `q.field(`
+  // token inside the filter callback (same param name) is the discriminator —
+  // a JS array `.filter` callback never calls `q.field(`. Two refinements over
+  // a naive whole-file scan:
+  //   (a) skip a `.filter` chained AFTER a `.withIndex(...)` on the same query
+  //       — that filters an already-indexed (bounded) stream, which is correct,
+  //       idiomatic Convex, not a full-table scan;
+  //   (b) only deny when the offending chain is NEW — if the same chain context
+  //       already exists in the pre-edit file, a pre-existing issue must not
+  //       block an unrelated edit (it is the author's standing debt, not this
+  //       change's). We scan the full file for chain context, then test each
+  //       offending chain against `originalContent`.
   const dbFilterRe =
-    /\.filter\(\s*\(?\s*(\w+)\s*\)?\s*=>[\s\S]{0,200}?\b\1\.field\(/;
-  const dbFilterMatch = dbFilterRe.exec(projected);
-  if (dbFilterMatch) {
+    /\.filter\(\s*\(?\s*(\w+)\s*\)?\s*=>[\s\S]{0,200}?\b\1\.field\(/g;
+  let dbm;
+  while ((dbm = dbFilterRe.exec(projected)) !== null) {
+    const at = dbm.index;
+    const chainStart = projected.lastIndexOf(".query(", at);
+    if (
+      chainStart !== -1 &&
+      projected.slice(chainStart, at).includes(".withIndex(")
+    ) {
+      continue; // bounded `.withIndex(...).filter(...)` — allowed
+    }
+    // The offending chain, from `.query(` (or a bounded look-back) through the
+    // `q.field(` token. If this exact context is already in the original file,
+    // it predates this edit — don't block.
+    const ctxFrom = chainStart !== -1 ? chainStart : Math.max(0, at - 200);
+    const offending = projected.slice(ctxFrom, at + dbm[0].length);
+    if (originalContent.includes(offending)) {
+      continue; // pre-existing — not introduced by this edit
+    }
     track("db_filter", "deny");
     deny(
       `convex-lint rule ".filter on a db query": this write contains ` +
-        `\`${snippet(dbFilterMatch[0])}\` — \`.filter\` scans the whole ` +
-        `table on every call. Use ` +
+        `\`${snippet(dbm[0])}\` — \`.filter\` on an unindexed db query scans ` +
+        `the whole table on every call. Use ` +
         `\`.withIndex("by_...", q => q.eq(...))\` with an index defined in ` +
         `convex/schema.ts instead. Define the index with ` +
         `\`.index("by_<field>", ["<field>"])\` on the table, then query it ` +
-        `via \`.withIndex\`.`,
+        `via \`.withIndex\`. (A \`.filter\` chained AFTER a \`.withIndex\` is ` +
+        `allowed — it only narrows the already-indexed range.)`,
     );
   }
 
   // Rule 2: old positional function syntax, e.g. `query(async (ctx, …) => …)`.
+  // Only deny when newly introduced (not already in the pre-edit file).
   const positionalRe =
-    /\b(query|mutation|action|internalQuery|internalMutation|internalAction)\(\s*async\s*\(/;
-  const positionalMatch = positionalRe.exec(projected);
-  if (positionalMatch) {
+    /\b(query|mutation|action|internalQuery|internalMutation|internalAction)\(\s*async\s*\(/g;
+  let positionalMatch;
+  while ((positionalMatch = positionalRe.exec(projected)) !== null) {
+    const ctxFrom = Math.max(0, positionalMatch.index - 20);
+    const offending = projected.slice(
+      ctxFrom,
+      positionalMatch.index + positionalMatch[0].length,
+    );
+    if (originalContent.includes(offending)) {
+      continue; // pre-existing — not introduced by this edit
+    }
     track("positional_syntax", "deny");
     deny(
       `convex-lint rule "old positional function syntax": this write ` +
@@ -196,8 +243,8 @@ try {
   const objectFormRe =
     /\b(query|mutation|action|internalQuery|internalMutation|internalAction)\(\s*\{/g;
   let m;
-  while ((m = objectFormRe.exec(projected)) !== null) {
-    const head = projected.slice(m.index, m.index + 300);
+  while ((m = objectFormRe.exec(addedText)) !== null) {
+    const head = addedText.slice(m.index, m.index + 300);
     const missing = [];
     if (!/\bargs\s*:/.test(head)) missing.push("`args:`");
     if (!/\breturns\s*:/.test(head)) missing.push("`returns:`");
