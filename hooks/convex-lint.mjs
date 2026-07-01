@@ -189,15 +189,22 @@ try {
   }
 
   // --- SOFT WARNINGS (never deny) ----------------------------------------
-  // Heuristic: each `query({`-style block whose first ~300 chars contain no
-  // `args:` / `returns:` gets one advisory line.
+  // Heuristic: each `query({`-style block whose validator region (everything up
+  // to its `handler:` key) contains no `args:` / `returns:` gets one advisory line.
   const warnings = [];
   let firstWarningRule = null;
   const objectFormRe =
     /\b(query|mutation|action|internalQuery|internalMutation|internalAction)\(\s*\{/g;
   let m;
   while ((m = objectFormRe.exec(projected)) !== null) {
-    const head = projected.slice(m.index, m.index + 300);
+    // Scan the function's option object up to its `handler:` key (every Convex
+    // function object has one, declared after args/returns) instead of a
+    // fixed-size window. A large `args:`/`returns:` validator can push
+    // `returns:` well past a 300-char window, producing a false "missing
+    // `returns:`" advisory. Fall back to 300 chars if no handler is found.
+    const rest = projected.slice(m.index);
+    const handlerIdx = rest.search(/\bhandler\s*:/);
+    const head = handlerIdx === -1 ? rest.slice(0, 300) : rest.slice(0, handlerIdx);
     const missing = [];
     if (!/\bargs\s*:/.test(head)) missing.push("`args:`");
     if (!/\breturns\s*:/.test(head)) missing.push("`returns:`");
