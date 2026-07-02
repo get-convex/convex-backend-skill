@@ -44,7 +44,23 @@
 //        name starting with `_`, or `_creationTime` listed as a column in an
 //        index's fields array, inside a schema file — all four are
 //        `IndexNameReserved` hard deploy failures (`_creationTime` is an
-//        automatic implicit tiebreaker Convex appends to every index).
+//        automatic implicit tiebreaker Convex appends to every index). A
+//        table name starting with `_` (e.g. `_migrations: defineTable(...)`)
+//        is the same reserved-prefix rule applied to `TableNameReserved`
+//        instead of `IndexNameReserved` — same file scope, same discriminator.
+//     8. `export const <jsReservedWord> = ...` in a convex/*.ts file, where
+//        the identifier is a JS reserved word (`delete`, `new`, `class`,
+//        `function`, `return`, `import`, `default`, `typeof`, `void`, …) —
+//        esbuild fails with "Expected identifier but found ...". Unambiguous:
+//        no valid JS export can use a reserved word as its binding name.
+//     9. `import ... from "<node builtin>"` / `require("<node builtin>")`
+//        (crypto, fs, path, http, child_process, os, …, with or without the
+//        `node:` prefix) in a convex/*.ts file that does not start with
+//        `"use node"` — Convex's default (non-Node) runtime is a V8 isolate
+//        with no Node builtins; esbuild fails to resolve the import. Every
+//        non-`"use node"` file in convex/ (queries, mutations, http routers,
+//        schema, etc.) runs in that isolate, so this is unambiguous
+//        regardless of what the file defines.
 // - `app.use(X)` in `convex.config.ts` where `X`'s import comes from a
 //   relative path (e.g. `./http`) is an ADVISORY, not a deny — legitimate
 //   components are mounted via a package's `convex.config` subpath
@@ -422,6 +438,107 @@ try {
             `fields array.`,
         );
       }
+    }
+
+    // Reserved TABLE names: a top-level schema property (or a `defineTable`
+    // call assigned to one) whose name starts with `_`, e.g.
+    // `_migrations: defineTable({...})`. This is `TableNameReserved`, the
+    // table-level twin of the `IndexNameReserved` checks above (eval-failure
+    // repro: f2-schema-migration, `_migrations is a reserved table name.`).
+    // Discriminator: an object-key (quoted or bare identifier) starting with
+    // `_`, immediately followed by `:` and (eventually) `defineTable(` as the
+    // value — scoped to schema.ts so this can't false-positive on an
+    // unrelated object literal elsewhere.
+    const reservedTableRe =
+      /(^|[{,]\s*)(["'`]?)(_[A-Za-z0-9_]*)\2\s*:\s*defineTable\s*\(/g;
+    let tableMatch;
+    while ((tableMatch = reservedTableRe.exec(projected)) !== null) {
+      const tableName = tableMatch[3];
+      track("reserved_table_name", "deny");
+      deny(
+        `convex-lint rule "reserved table name": this write contains ` +
+          `\`${snippet(`${tableName}: defineTable(`)}\` — \`${tableName}\` ` +
+          `is a reserved table name (table names starting with \`_\` are ` +
+          `reserved by Convex, same rule as reserved index names). Rename ` +
+          `the table to drop the leading underscore, e.g. ` +
+          `\`${tableName.replace(/^_+/, "")}: defineTable(...)\`.`,
+      );
+    }
+  }
+
+  // Rule 8: `export const <jsReservedWord> = ...` in a convex/*.ts file.
+  // esbuild fails with "Expected identifier but found <word>" — no valid JS
+  // binding can use a reserved word as its name. Unambiguous: this is a
+  // fixed, closed set of ECMAScript reserved words (the ones a model
+  // realistically reaches for as a CRUD verb — `delete` above all — plus the
+  // rest of the keyword set that breaks esbuild the same way), matched only
+  // as the identifier immediately after `export const`.
+  const jsReservedWords = [
+    "delete", "new", "class", "function", "return", "import", "default",
+    "typeof", "void", "if", "else", "for", "while", "do", "switch", "case",
+    "break", "continue", "try", "catch", "finally", "throw", "instanceof",
+    "in", "this", "super", "extends", "export", "const", "let", "var",
+    "null", "true", "false", "yield", "await", "static", "enum",
+  ];
+  const reservedWordAlt = jsReservedWords.join("|");
+  const reservedIdentifierRe = new RegExp(
+    `export\\s+const\\s+(${reservedWordAlt})\\s*=`,
+    "g",
+  );
+  let reservedIdMatch;
+  while ((reservedIdMatch = reservedIdentifierRe.exec(projected)) !== null) {
+    const word = reservedIdMatch[1];
+    track("reserved_identifier", "deny");
+    deny(
+      `convex-lint rule "reserved identifier": this write contains ` +
+        `\`${snippet(reservedIdMatch[0])}\` — \`${word}\` is a JS reserved ` +
+        `word and can't be used as an export name (esbuild fails with ` +
+        `"Expected identifier but found \\"${word}\\""). Rename the export ` +
+        `to a non-reserved synonym, e.g. \`export const remove = ...\` or ` +
+        `\`export const destroy = ...\` instead of \`export const ${word} = ...\`.`,
+    );
+  }
+
+  // Rule 9: a Node.js builtin module imported (or required) in a
+  // convex/*.ts file that does not start with `"use node"`. Convex's default
+  // runtime is a V8 isolate with no Node builtins — bundling fails with
+  // "Could not resolve '<module>' ... built into node" (eval-failure repro:
+  // f3-billing-entitlements, `import crypto from "crypto"` in convex/http.ts,
+  // a file with no `"use node"` directive). Unambiguous regardless of what
+  // the file defines (query/mutation/httpRouter/schema/etc.) — every
+  // non-`"use node"` file in convex/ runs in the isolate, so any Node
+  // builtin import there is always a hard deploy failure. Matches both the
+  // bare specifier (`"crypto"`) and the `node:` prefix (`"node:crypto"`).
+  const nodeBuiltins = [
+    "crypto", "fs", "path", "http", "https", "child_process", "os", "net",
+    "tls", "dns", "stream", "zlib", "util", "buffer", "events", "url",
+    "querystring", "assert", "cluster", "dgram", "readline", "repl", "vm",
+    "worker_threads", "perf_hooks",
+  ];
+  const builtinAlt = nodeBuiltins.join("|");
+  if (!useNodeRe.test(projected)) {
+    const nodeImportRe = new RegExp(
+      `(?:import\\s+(?:[\\w*{}\\s,]+\\s+from\\s+)?|require\\(\\s*)` +
+        `["'](?:node:)?(${builtinAlt})["']`,
+      "g",
+    );
+    let nodeImportMatch;
+    while ((nodeImportMatch = nodeImportRe.exec(projected)) !== null) {
+      const mod = nodeImportMatch[1];
+      track("node_api_without_use_node", "deny");
+      deny(
+        `convex-lint rule "Node API without \"use node\"": this write ` +
+          `contains \`${snippet(nodeImportMatch[0])}\` — \`${mod}\` is a ` +
+          `Node.js builtin, but this file has no \`"use node"\` directive. ` +
+          `Convex's default runtime is a V8 isolate with no Node builtins, ` +
+          `so esbuild will fail to resolve \`${mod}\`. Fix: either move the ` +
+          `code that needs \`${mod}\` into a separate action file that ` +
+          `starts with \`"use node";\` (actions are the only functions that ` +
+          `can run in the Node.js runtime), or — for \`crypto\` ` +
+          `specifically — use the Web Crypto API via \`globalThis.crypto\` ` +
+          `(e.g. \`crypto.subtle\`, \`crypto.randomUUID()\`), which needs no ` +
+          `import and works in the default runtime.`,
+      );
     }
   }
 

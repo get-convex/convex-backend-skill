@@ -426,6 +426,179 @@ test("does not flag reserved-looking index names outside schema.ts", () => {
   assertAllowedSilent(result);
 });
 
+// --- Rule 7 (extension): reserved table names (schema.ts only) -------------
+
+test('denies `_migrations: defineTable(...)` (f2 eval-failure repro)', () => {
+  const result = runHook(
+    writePayload(
+      "/tmp/proj/convex/schema.ts",
+      `import { defineSchema, defineTable } from "convex/server";\n` +
+        `import { v } from "convex/values";\n` +
+        `export default defineSchema({\n` +
+        `  users: defineTable({ email: v.string() }).index("by_email", ["email"]),\n` +
+        `  notes: defineTable({ title: v.string() }).index("by_owner", ["ownerId"]),\n` +
+        `  _migrations: defineTable({\n` +
+        `    name: v.string(),\n` +
+        `    completedAt: v.number(),\n` +
+        `  }).index("by_name", ["name"]),\n` +
+        `});\n`,
+    ),
+  );
+  assertDenied(result, "reserved table name");
+});
+
+test("allows the corrected table name (migrations, no leading underscore)", () => {
+  const result = runHook(
+    writePayload(
+      "/tmp/proj/convex/schema.ts",
+      `import { defineSchema, defineTable } from "convex/server";\n` +
+        `import { v } from "convex/values";\n` +
+        `export default defineSchema({\n` +
+        `  migrations: defineTable({ name: v.string() }).index("by_name", ["name"]),\n` +
+        `});\n`,
+    ),
+  );
+  assertAllowedSilent(result);
+});
+
+test("does not flag a reserved-looking table name outside schema.ts", () => {
+  const result = runHook(
+    writePayload(
+      "/tmp/proj/convex/foo.ts",
+      `// just mentioning _migrations: defineTable( in a comment elsewhere\n` +
+        `import { query } from "./_generated/server";\n` +
+        `export const f = query({ args: {}, returns: null, handler: async () => null });\n`,
+    ),
+  );
+  assertAllowedSilent(result);
+});
+
+// --- Rule 8: reserved JS identifier as an export name -----------------------
+
+test('denies `export const delete = mutation(...)` (f1 eval-failure repro)', () => {
+  const result = runHook(
+    writePayload(
+      "/tmp/proj/convex/projects.ts",
+      `import { mutation } from "./_generated/server";\n` +
+        `import { v } from "convex/values";\n` +
+        `export const delete = mutation({\n` +
+        `  args: { projectId: v.id("projects") },\n` +
+        `  returns: v.null(),\n` +
+        `  handler: async (ctx, args) => { await ctx.db.delete(args.projectId); return null; },\n` +
+        `});\n`,
+    ),
+  );
+  assertDenied(result, "reserved identifier");
+});
+
+test('denies `export const new = query(...)`', () => {
+  const result = runHook(
+    writePayload(
+      "/tmp/proj/convex/foo.ts",
+      `import { query } from "./_generated/server";\n` +
+        `export const new = query({ args: {}, returns: null, handler: async () => null });\n`,
+    ),
+  );
+  assertDenied(result, "reserved identifier");
+});
+
+test("allows the corrected export name (remove instead of delete)", () => {
+  const result = runHook(
+    writePayload(
+      "/tmp/proj/convex/projects.ts",
+      `import { mutation } from "./_generated/server";\n` +
+        `export const remove = mutation({ args: {}, returns: null, handler: async () => {} });\n`,
+    ),
+  );
+  assertAllowedSilent(result);
+});
+
+test("does not flag an identifier that merely starts with a reserved word (e.g. `inbox`, `deleteMany`)", () => {
+  const result = runHook(
+    writePayload(
+      "/tmp/proj/convex/foo.ts",
+      `import { query, mutation } from "./_generated/server";\n` +
+        `export const inbox = query({ args: {}, returns: null, handler: async () => null });\n` +
+        `export const deleteMany = mutation({ args: {}, returns: null, handler: async () => {} });\n`,
+    ),
+  );
+  assertAllowedSilent(result);
+});
+
+// --- Rule 9: Node builtin import without "use node" -------------------------
+
+test('denies `import crypto from "crypto"` in a file without "use node" (f3 eval-failure repro)', () => {
+  const result = runHook(
+    writePayload(
+      "/tmp/proj/convex/http.ts",
+      `import { httpRouter } from "convex/server";\n` +
+        `import { HttpRouter } from "convex/server";\n` +
+        `import { api, internal } from "./_generated/api";\n` +
+        `import crypto from "crypto";\n` +
+        `const http: HttpRouter = httpRouter();\n` +
+        `http.route({ path: "/health", method: "GET", handler: async () => new Response("ok") });\n` +
+        `export default http;\n`,
+    ),
+  );
+  assertDenied(result, 'Node API without "use node"');
+});
+
+test('denies `import { createHmac } from "crypto"` (named import form)', () => {
+  const result = runHook(
+    writePayload(
+      "/tmp/proj/convex/http.ts",
+      `import { httpRouter } from "convex/server";\n` +
+        `import { createHmac } from "crypto";\n` +
+        `const http = httpRouter();\nexport default http;\n`,
+    ),
+  );
+  assertDenied(result, 'Node API without "use node"');
+});
+
+test('denies `require("node:fs")` (node: prefix, require form)', () => {
+  const result = runHook(
+    writePayload(
+      "/tmp/proj/convex/foo.ts",
+      `import { mutation } from "./_generated/server";\n` +
+        `const fs = require("node:fs");\n` +
+        `export const f = mutation({ args: {}, returns: null, handler: async () => {} });\n`,
+    ),
+  );
+  assertDenied(result, 'Node API without "use node"');
+});
+
+test('allows a Node builtin import in a file that starts with "use node"', () => {
+  const result = runHook(
+    writePayload(
+      "/tmp/proj/convex/cryptoActions.ts",
+      `"use node";\n` +
+        `import { action } from "./_generated/server";\n` +
+        `import { createHmac } from "crypto";\n` +
+        `export const verify = action({ args: {}, returns: v.null(), handler: async () => {\n` +
+        `  createHmac("sha256", "x");\n` +
+        `  return null;\n` +
+        `} });\n`,
+    ),
+  );
+  assertAllowedSilent(result);
+});
+
+test("allows Web Crypto via globalThis.crypto with no import", () => {
+  const result = runHook(
+    writePayload(
+      "/tmp/proj/convex/http.ts",
+      `import { httpRouter } from "convex/server";\n` +
+        `const http = httpRouter();\n` +
+        `http.route({ path: "/health", method: "GET", handler: async () => {\n` +
+        `  const id = crypto.randomUUID();\n` +
+        `  return new Response(id);\n` +
+        `} });\n` +
+        `export default http;\n`,
+    ),
+  );
+  assertAllowedSilent(result);
+});
+
 // --- pre-existing rules still work (regression guard) ----------------------
 
 test("still denies .filter(q => q.field(...)) on a db query", () => {
