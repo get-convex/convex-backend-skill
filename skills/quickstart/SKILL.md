@@ -13,6 +13,21 @@ Your job: scaffold it, open the browser, then **build the user's idea live**, na
 
 > **Scope for this release.** The scaffold ships with **no login** (no auth/passkeys), **no in-app panel**, and **no publishing** — the app runs **locally** at the printed URL. Only add auth if the user explicitly asks for it. Don't deploy, publish to a public URL, or wire a custom domain.
 
+## Degradation rule — when the scaffold can't run, write code, not ceremony
+
+If the served scaffold/bootstrap can't run — a non-interactive/one-shot session, no network access, a sandboxed temp dir, or the user just wants code rather than a running app — **don't wait on the scaffold**. Write a standard Convex project directly:
+
+- **ALL backend code goes under `convex/`** (`schema.ts`, queries, mutations, actions, `http.ts`, `crons.ts`, `convex.config.ts`) — **NEVER at the project root.** Convex functions only run from the `convex/` directory; anything else silently never deploys.
+- **Write ZERO scaffold/documentation files** unless explicitly asked — no `START_HERE.md`, `ARCHITECTURE.md`, `MANIFEST.txt`, `DEPLOYMENT_CHECKLIST.md`, `IMPLEMENTATION_SUMMARY.txt`, or a wall of README files. "Build me a backend" is a request for code, not a design-doc package.
+
+## Data access + imports — read before writing any convex/*.ts
+
+- Never an unbounded `.collect()` on a table that can grow — use `.withIndex(...)` combined with `.paginate(paginationOpts)` or `.take(n)`.
+- Index, don't filter — add `.index(...)` in `schema.ts` for every read path and query it with `.withIndex(...)`; `.filter()` is a full table scan, not a substitute for a SQL `WHERE`.
+- The exact import table: `query`/`mutation`/`action`/`internalQuery`/`internalMutation`/`internalAction` come from `"./_generated/server"`; `api`/`internal` come from `"./_generated/api"`; never `import { query } from "convex/server"` or `import { internal } from "./_generated/server"` in application code — both are hard deploy failures.
+- `v.literal("exact value")` for a fixed string/enum member, not a bare `v.string()` when the set of values is fixed.
+- `"use node";` is action-only — a module with `"use node"` can never also export a `query` or `mutation`; split the file if you need both.
+
 ---
 
 ## 1. Get the idea
