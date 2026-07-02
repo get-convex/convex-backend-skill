@@ -36,6 +36,10 @@ If the bootstrap can't run — a non-interactive/one-shot session, no network ac
 - `v.literal("exact value")` for fixed string/enum members, not a bare `v.string()`.
 - `"use node";` is action-only — never in a file that also exports a `query` or `mutation`.
 
+## Self-verify — before declaring backend work done
+
+Before you call any backend work finished: run `npx tsc --noEmit` and, when a deployment is available (or via a local anonymous one: `CONVEX_AGENT_MODE=anonymous npx convex dev --once`), push it. Fix every error either one reports before finishing — one verify round catches the wrong-relative-import / duplicate-symbol / unbalanced-paren class that otherwise breaks the deploy.
+
 ## 1. Get the idea
 
 One sentence describing the app. If the user gave one, use it. If not, ask once:

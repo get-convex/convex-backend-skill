@@ -270,6 +270,162 @@ test(".collect() advisory never denies", () => {
   );
 });
 
+// --- Rule 6: hallucinated convex/server symbol -----------------------------
+
+test('denies `import { HttpResponse } from "convex/server"` (eval-failure repro)', () => {
+  const result = runHook(
+    writePayload(
+      "/tmp/proj/convex/http.ts",
+      `import { HttpResponse } from "convex/server";\n` +
+        `export function handler() { return new HttpResponse("ok"); }\n`,
+    ),
+  );
+  assertDenied(result, "convex/server bad symbol");
+});
+
+test("allows the corrected httpAction import (./_generated/server) with web-standard Response", () => {
+  const result = runHook(
+    writePayload(
+      "/tmp/proj/convex/http.ts",
+      `import { httpAction } from "./_generated/server";\n` +
+        `export const handler = httpAction(async () => {\n` +
+        `  return new Response("ok");\n` +
+        `});\n`,
+    ),
+  );
+  assertAllowedSilent(result);
+});
+
+test("allows a legit convex/server import (httpRouter, defineSchema)", () => {
+  const result = runHook(
+    writePayload(
+      "/tmp/proj/convex/http.ts",
+      `import { httpRouter, defineSchema } from "convex/server";\n` +
+        `const http = httpRouter();\nexport default http;\n`,
+    ),
+  );
+  assertAllowedSilent(result);
+});
+
+// --- app.use() advisory: relative-path import into app.use() --------------
+
+test('advises (does not deny) on `app.use(http)` with `import http from "./http"`', () => {
+  const result = runHook(
+    writePayload(
+      "/tmp/proj/convex/convex.config.ts",
+      `import { defineApp } from "convex/server";\n` +
+        `import http from "./http";\n` +
+        `const app = defineApp();\n` +
+        `app.use(http);\n` +
+        `export default app;\n`,
+    ),
+  );
+  assertAdvisory(result, "app.use(http)");
+});
+
+test("does not advise on app.use(agent) from a package convex.config subpath", () => {
+  const result = runHook(
+    writePayload(
+      "/tmp/proj/convex/convex.config.ts",
+      `import { defineApp } from "convex/server";\n` +
+        `import agent from "@convex-dev/agent/convex.config";\n` +
+        `const app = defineApp();\n` +
+        `app.use(agent);\n` +
+        `export default app;\n`,
+    ),
+  );
+  assertAllowedSilent(result);
+});
+
+// --- Rule 7: reserved index names (schema.ts only) -------------------------
+
+test('denies `.index("by_creation_time", ["userId"])` (eval-failure repro)', () => {
+  const result = runHook(
+    writePayload(
+      "/tmp/proj/convex/schema.ts",
+      `import { defineSchema, defineTable } from "convex/server";\n` +
+        `import { v } from "convex/values";\n` +
+        `export default defineSchema({\n` +
+        `  messages: defineTable({ userId: v.string() })\n` +
+        `    .index("by_creation_time", ["userId"]),\n` +
+        `});\n`,
+    ),
+  );
+  assertDenied(result, "reserved index name");
+});
+
+test('denies `.index("by_id", ["userId"])`', () => {
+  const result = runHook(
+    writePayload(
+      "/tmp/proj/convex/schema.ts",
+      `import { defineSchema, defineTable } from "convex/server";\n` +
+        `import { v } from "convex/values";\n` +
+        `export default defineSchema({\n` +
+        `  messages: defineTable({ userId: v.string() })\n` +
+        `    .index("by_id", ["userId"]),\n` +
+        `});\n`,
+    ),
+  );
+  assertDenied(result, "reserved index name");
+});
+
+test('denies `.index("by_user", ["userId", "_creationTime"])` (eval-failure repro)', () => {
+  const result = runHook(
+    writePayload(
+      "/tmp/proj/convex/schema.ts",
+      `import { defineSchema, defineTable } from "convex/server";\n` +
+        `import { v } from "convex/values";\n` +
+        `export default defineSchema({\n` +
+        `  messages: defineTable({ userId: v.string() })\n` +
+        `    .index("by_user", ["userId", "_creationTime"]),\n` +
+        `});\n`,
+    ),
+  );
+  assertDenied(result, "reserved index name");
+});
+
+test('denies an index name starting with "_"', () => {
+  const result = runHook(
+    writePayload(
+      "/tmp/proj/convex/schema.ts",
+      `import { defineSchema, defineTable } from "convex/server";\n` +
+        `import { v } from "convex/values";\n` +
+        `export default defineSchema({\n` +
+        `  messages: defineTable({ userId: v.string() })\n` +
+        `    .index("_byUser", ["userId"]),\n` +
+        `});\n`,
+    ),
+  );
+  assertDenied(result, "reserved index name");
+});
+
+test("allows the corrected index (by_user, [userId])", () => {
+  const result = runHook(
+    writePayload(
+      "/tmp/proj/convex/schema.ts",
+      `import { defineSchema, defineTable } from "convex/server";\n` +
+        `import { v } from "convex/values";\n` +
+        `export default defineSchema({\n` +
+        `  messages: defineTable({ userId: v.string() })\n` +
+        `    .index("by_user", ["userId"]),\n` +
+        `});\n`,
+    ),
+  );
+  assertAllowedSilent(result);
+});
+
+test("does not flag reserved-looking index names outside schema.ts", () => {
+  const result = runHook(
+    writePayload(
+      "/tmp/proj/convex/foo.ts",
+      `// just mentioning .index("by_id", ["x"]) in a comment/string elsewhere\n` +
+        `import { query } from "./_generated/server";\n` +
+        `export const f = query({ args: {}, returns: null, handler: async () => null });\n`,
+    ),
+  );
+  assertAllowedSilent(result);
+});
+
 // --- pre-existing rules still work (regression guard) ----------------------
 
 test("still denies .filter(q => q.field(...)) on a db query", () => {
