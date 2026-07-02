@@ -1,137 +1,260 @@
 #!/usr/bin/env node
-// PostToolUse hook: after Claude writes or edits a file under convex/, run the
-// TypeScript compiler and feed any errors straight back into Claude's context
-// via `additionalContext`. Tightens the feedback loop from "wait for the next
-// `convex dev` push" to "instant, on every edit."
+// Stop hook: when the agent finishes its turn, VERIFY the Convex backend —
+// `convex codegen`, then `tsc --noEmit`, then (consent-gated) a real
+// `convex dev --once` push. Convex's push + Next HMR can both go green while
+// `tsc --noEmit` is red (a dropped export, a bad Id<...>, a render-only
+// crash), and tsc can be green while the deploy-time push is red (schema
+// validation, analyze errors). This hook is the enforcement mechanism behind
+// the skills' "self-verify before you stop" rule.
+//
+// Why Stop (not PostToolUse, where this hook used to live): any mid-turn
+// trigger fires BETWEEN coupled multi-file edits — file A references a symbol
+// that only exists once file B lands two edits later — so the check fails
+// spuriously and trains the agent to ignore it. Stop runs when the turn is
+// COMPLETE, i.e. after all coupled edits have landed. A Stop hook can still
+// block/inform: exit 2 prevents the agent from stopping and feeds stderr back
+// to it, so real errors get fixed before the turn ends.
 //
 // Design notes:
-// - Exits 0 in every case. Failures are surfaced through the documented
-//   `hookSpecificOutput.additionalContext` field (a system reminder Claude
-//   reads on its next turn), not via a non-zero exit, so a type error mid-build
-//   never reads as a broken hook.
-// - Self-guards: silent unless the edited file is a real `convex/*.ts` source
-//   file, a `convex/tsconfig.json` exists, and a local `tsc` is installed.
-//   Never triggers a network fetch (`npx --no-install`).
-// - Uses Node (guaranteed in a Convex project) for both JSON parsing and
-//   emitting, so multi-line tsc output is escaped correctly.
-// - Fast no-op path (Finding 4): the `isConvexTs` path check runs
-//   immediately after parsing stdin — before the tsconfig directory walk and
-//   long before `execFileSync(tsc, ...)`, the actually expensive step. A
-//   non-convex/*.ts write (or any write when there's no convex/ dir at all)
-//   exits via `emit(null)` without touching the filesystem beyond stdin, so
-//   the no-op case costs Node startup only (single-digit/low-double-digit ms
-//   locally), not a tsc invocation.
+// - Self-guards short-circuit BEFORE any real work, each an instant silent
+//   exit 0: `stop_hook_active` (loop guard — if we already blocked this stop
+//   once, don't block again), no convex/ directory, no node_modules, and no
+//   uncommitted convex/*.ts changes (skips purely conversational turns).
+// - Hard consent line: the `convex dev --once` leg runs ONLY when .env.local
+//   already exists AND already contains CONVEX_DEPLOYMENT. This hook must
+//   NEVER create or start a new Convex deployment/project as a side effect —
+//   if the project isn't provisioned, the leg is skipped silently.
+// - Hard ~90s overall budget across all legs. If the budget is exhausted or
+//   any child process hits its timeout, ALLOW (exit 0) — a slow verify must
+//   never wedge the session.
+// - Blocks (exit 2) only on REAL failures: a non-zero `convex codegen`, tsc
+//   output containing `error TS\d+`, or a non-zero `convex dev --once`.
+//   Missing binaries (`npx --no-install` refusing to run), warnings, and
+//   timeouts never block. Never triggers a network fetch for tooling.
+// - `main()` is exported with injectable exec/fs/clock so the test suite can
+//   fake the process boundary; the CLI entrypoint wires the real ones.
 
-import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
-import { dirname, basename, resolve, sep } from "node:path";
-import { capture } from "./analytics.mjs";
+import { spawnSync } from "node:child_process";
+import {
+  existsSync as realExistsSync,
+  readFileSync as realReadFileSync,
+} from "node:fs";
+import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+import { capture as realCapture } from "./analytics.mjs";
 
-function emit(additionalContext) {
-  if (additionalContext) {
-    process.stdout.write(
-      JSON.stringify({
-        hookSpecificOutput: {
-          hookEventName: "PostToolUse",
-          additionalContext,
-        },
-      }),
-    );
-  }
-  process.exit(0);
-}
+const OVERALL_BUDGET_MS = 90_000;
+const GIT_TIMEOUT_MS = 10_000;
+const TAIL_LINES = 40;
 
-function readStdin() {
-  try {
-    return readFileSync(0, "utf8");
-  } catch {
-    return "";
-  }
-}
+const ALLOW = { exitCode: 0, stderr: "" };
 
-let payload;
-try {
-  payload = JSON.parse(readStdin() || "{}");
-} catch {
-  emit(null);
-}
-
-const toolInput = payload.tool_input ?? {};
-const filePath = toolInput.file_path ?? toolInput.path ?? "";
-const cwd = payload.cwd ?? process.cwd();
-
-// Only act on TypeScript source inside a convex/ directory.
-// Skip generated code and declaration files.
-const normalized = filePath.replaceAll("\\", "/");
-const isConvexTs =
-  /(^|\/)convex\//.test(normalized) &&
-  normalized.endsWith(".ts") &&
-  !normalized.endsWith(".d.ts") &&
-  !normalized.includes("/_generated/");
-if (!isConvexTs) emit(null);
-
-const absFile = resolve(cwd, filePath);
-
-// Walk up from the file to find the convex/ directory with a tsconfig.json.
-let convexDir = null;
-let dir = dirname(absFile);
-const root = resolve(dir, sep);
-while (dir && dir !== root) {
-  if (basename(dir) === "convex" && existsSync(resolve(dir, "tsconfig.json"))) {
-    convexDir = dir;
-    break;
-  }
-  const parent = dirname(dir);
-  if (parent === dir) break;
-  dir = parent;
-}
-if (convexDir === null) emit(null);
-
-// Resolve a local tsc; never fetch from the network.
-const projectRoot = dirname(convexDir);
-const localTsc = resolve(projectRoot, "node_modules", ".bin", "tsc");
-const hasLocalTsc = existsSync(localTsc);
-
-let output = "";
-try {
-  const cmd = hasLocalTsc ? localTsc : "npx";
-  const args = hasLocalTsc
-    ? ["--noEmit", "-p", convexDir]
-    : ["--no-install", "tsc", "--noEmit", "-p", convexDir];
-  execFileSync(cmd, args, {
-    cwd: projectRoot,
-    stdio: ["ignore", "pipe", "pipe"],
-    timeout: 60_000,
+// Real exec: run a child process synchronously, never throw. Timeouts and
+// missing binaries are reported as flags rather than exceptions so the
+// decision logic (and its tests) stay linear.
+function realExec(file, args, { cwd, timeout, env } = {}) {
+  const r = spawnSync(file, args, {
+    cwd,
+    timeout,
+    env,
     encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
   });
-  // Exit 0 from tsc → no type errors → stay silent.
-  emit(null);
-} catch (err) {
-  // tsc exited non-zero (type errors) OR tsc was unavailable.
-  output = `${err.stdout ?? ""}${err.stderr ?? ""}`.trim();
-  // If npx couldn't find tsc (no local install), stay silent rather than nag.
-  if (!output || /could not determine executable|not found/i.test(output)) {
-    emit(null);
+  return {
+    status: r.status,
+    stdout: r.stdout ?? "",
+    stderr: r.stderr ?? "",
+    timedOut: r.error?.code === "ETIMEDOUT",
+    notFound: r.error?.code === "ENOENT",
+  };
+}
+
+// Last N lines of combined output — the tail is where codegen/dev errors
+// land, and it caps the report so a cascade can't flood the context.
+function tail(output, n = TAIL_LINES) {
+  const lines = output.split("\n").filter(Boolean);
+  const kept = lines.slice(-n);
+  const omitted =
+    lines.length > n ? `… ${lines.length - n} earlier line(s) omitted.\n` : "";
+  return omitted + kept.join("\n");
+}
+
+// `npx --no-install` refusing to run (no local install) must not block.
+function isMissingBinary(result) {
+  return (
+    result.notFound ||
+    /could not determine executable|command not found|not found/i.test(
+      `${result.stdout}${result.stderr}`,
+    )
+  );
+}
+
+// Does this project declare (or have installed) the `convex` package?
+function hasConvexDependency(cwd, { existsSync, readFileSync }) {
+  try {
+    const pkg = JSON.parse(readFileSync(resolve(cwd, "package.json"), "utf8"));
+    for (const key of ["dependencies", "devDependencies", "peerDependencies"]) {
+      if (pkg[key] && typeof pkg[key] === "object" && "convex" in pkg[key]) {
+        return true;
+      }
+    }
+  } catch {
+    // No/unparseable package.json — fall through to the installed check.
   }
+  return existsSync(resolve(cwd, "node_modules", "convex", "package.json"));
 }
 
-// Cap the report so a cascade of errors doesn't flood the context.
-const lines = output.split("\n").filter(Boolean);
-const capped = lines.slice(0, 40).join("\n");
-const more =
-  lines.length > 40 ? `\n… and ${lines.length - 40} more line(s).` : "";
-
-// Fire-and-forget telemetry on the error path only (the clean path stays
-// silent — too chatty otherwise). `capture` swallows every error and spawns
-// a detached child, but wrap it anyway so analytics can never break the hook.
-try {
-  capture("typecheck_hook_fired", { error_count: lines.length });
-} catch {
-  // never let telemetry affect the typecheck report
+// Prefer the local bin (no network, no npx startup); fall back to
+// `npx --no-install` which refuses (harmlessly) when nothing is installed.
+function resolveBin(cwd, name, args, existsSync) {
+  const local = resolve(cwd, "node_modules", ".bin", name);
+  if (existsSync(local)) return { file: local, args };
+  return { file: "npx", args: ["--no-install", name, ...args] };
 }
 
-emit(
-  `TypeScript errors in the Convex backend after editing \`${filePath}\` ` +
-    `(from \`tsc --noEmit -p convex\`). Fix these before continuing — they will ` +
-    `block the next \`convex dev\` push:\n\n${capped}${more}`,
-);
+// Uncommitted convex/*.ts source changes (the "did this turn touch the
+// backend?" signal). Skips _generated/ and .d.ts, matches .ts/.tsx.
+function touchedConvexTs(porcelain) {
+  return porcelain.split("\n").some((line) => {
+    // Porcelain: `XY path` (or `XY old -> new` for renames — take the new).
+    const path = line.slice(3).split(" -> ").pop()?.trim() ?? "";
+    return (
+      /(^|\/)convex\//.test(path) &&
+      /\.tsx?$/.test(path) &&
+      !path.endsWith(".d.ts") &&
+      !path.includes("/_generated/")
+    );
+  });
+}
+
+export function main(payload, overrides = {}) {
+  const {
+    exec = realExec,
+    existsSync = realExistsSync,
+    readFileSync = realReadFileSync,
+    now = Date.now,
+    budgetMs = OVERALL_BUDGET_MS,
+    capture = realCapture,
+  } = overrides;
+  const fsDeps = { existsSync, readFileSync };
+
+  // --- Self-guards: each an instant silent allow, before any real work. ---
+
+  // Loop guard: we already blocked this stop once; the agent has been
+  // informed. Blocking again would spin forever on unfixable errors.
+  if (payload.stop_hook_active) return ALLOW;
+
+  const cwd = payload.cwd ?? process.cwd();
+
+  // Only act in a project with a Convex backend and installed tooling.
+  if (!existsSync(resolve(cwd, "convex"))) return ALLOW;
+  if (!existsSync(resolve(cwd, "node_modules"))) return ALLOW;
+
+  const deadline = now() + budgetMs;
+  const remaining = () => deadline - now();
+
+  // Only verify when the turn actually touched convex/*.ts — skips purely
+  // conversational turns. (If this isn't a git repo we can't tell; verify
+  // anyway, matching the beta's Stop-hook behavior.)
+  const git = exec("git", ["status", "--porcelain"], {
+    cwd,
+    timeout: GIT_TIMEOUT_MS,
+  });
+  if (git.status === 0 && !touchedConvexTs(git.stdout)) return ALLOW;
+
+  const block = (leg, output) => {
+    const report = tail(output.trim() || `(no output; ${leg} exited non-zero)`);
+    // Fire-and-forget telemetry on the block path only; never let it break
+    // the hook.
+    try {
+      capture("stop_verify_blocked", { leg });
+    } catch {
+      // telemetry must never affect the verify report
+    }
+    return {
+      exitCode: 2,
+      stderr:
+        `convex plugin: end-of-turn verify failed at \`${leg}\` — fix these ` +
+        `errors before finishing the turn:\n${report}\n`,
+    };
+  };
+
+  // --- Leg A: `convex codegen` (only when the convex dep is present). ------
+  if (remaining() > 0 && hasConvexDependency(cwd, fsDeps)) {
+    const { file, args } = resolveBin(cwd, "convex", ["codegen"], existsSync);
+    const r = exec(file, args, { cwd, timeout: remaining() });
+    if (r.timedOut) return ALLOW; // budget valve: never wedge the session
+    if (!isMissingBinary(r) && r.status !== 0) {
+      return block("convex codegen", `${r.stdout}${r.stderr}`);
+    }
+  }
+
+  // --- Leg B: `tsc --noEmit`. ----------------------------------------------
+  if (remaining() > 0) {
+    const convexTsconfig = existsSync(resolve(cwd, "convex", "tsconfig.json"));
+    const rootTsconfig = existsSync(resolve(cwd, "tsconfig.json"));
+    if (convexTsconfig || rootTsconfig) {
+      const tscArgs = convexTsconfig
+        ? ["--noEmit", "-p", resolve(cwd, "convex")]
+        : ["--noEmit"];
+      const { file, args } = resolveBin(cwd, "tsc", tscArgs, existsSync);
+      const r = exec(file, args, { cwd, timeout: remaining() });
+      if (r.timedOut) return ALLOW;
+      const out = `${r.stdout}${r.stderr}`;
+      // Block ONLY on real tsc diagnostics; a missing tsc, warnings, or
+      // other non-error output must not block the agent.
+      if (r.status !== 0 && /error TS\d+/.test(out)) {
+        return block("tsc --noEmit", out);
+      }
+    }
+  }
+
+  // --- Leg C: `convex dev --once` (consent-gated). --------------------------
+  // HARD CONSENT LINE: only against an ALREADY-provisioned deployment.
+  // .env.local must already exist and already name a CONVEX_DEPLOYMENT;
+  // otherwise skip silently — never create/start a deployment from a hook.
+  if (remaining() > 0) {
+    let envLocal = null;
+    try {
+      envLocal = readFileSync(resolve(cwd, ".env.local"), "utf8");
+    } catch {
+      // No .env.local — leg skipped.
+    }
+    if (envLocal !== null && /(^|\n)\s*CONVEX_DEPLOYMENT\s*=/.test(envLocal)) {
+      const { file, args } = resolveBin(
+        cwd,
+        "convex",
+        ["dev", "--once"],
+        existsSync,
+      );
+      const r = exec(file, args, {
+        cwd,
+        timeout: remaining(),
+        env: { ...process.env, CONVEX_AGENT_MODE: "anonymous" },
+      });
+      if (r.timedOut) return ALLOW;
+      if (!isMissingBinary(r) && r.status !== 0) {
+        return block("convex dev --once", `${r.stdout}${r.stderr}`);
+      }
+    }
+  }
+
+  return ALLOW;
+}
+
+// --- CLI entrypoint (what Claude Code invokes on Stop) -----------------------
+const invokedDirectly =
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(resolve(process.argv[1])).href;
+
+if (invokedDirectly) {
+  let payload = {};
+  try {
+    payload = JSON.parse(realReadFileSync(0, "utf8") || "{}");
+  } catch {
+    // Unparseable stdin → treat as an empty payload (guards will allow).
+  }
+  const result = main(payload);
+  if (result.stderr) process.stderr.write(result.stderr);
+  process.exit(result.exitCode);
+}
