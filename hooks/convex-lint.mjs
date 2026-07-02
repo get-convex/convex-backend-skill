@@ -33,6 +33,22 @@
 //     5. A file with `"use node"` that also defines `query(`/`mutation(` —
 //        queries and mutations cannot run in the Node.js runtime. Hard deploy
 //        failure.
+//     6. `import { ... } from "convex/server"` where ANY named import is not
+//        a real export of the `convex/server` module — e.g. `HttpResponse`,
+//        which does not exist. Grounded against the actual npm package (see
+//        CONVEX_SERVER_EXPORTS below): a name outside that list is either a
+//        typo, a hallucinated symbol, or one of the generated-server aliases
+//        (query/mutation/…) already covered by rule 3. Hard deploy failure.
+//     7. `app.use(X)` in convex/convex.config.ts where X is imported from a
+//        RELATIVE path (e.g. `./http`) rather than a package's
+//        `.../convex.config` submodule — `app.use(...)` only accepts
+//        Component definitions from installed Convex Components, never a
+//        same-project module. Hard deploy failure when unambiguous
+//        (identifier traced to a relative-path import); advisory otherwise.
+//     8. `schema.ts` indexes named `by_id` / `by_creation_time` / anything
+//        starting with `_`, or an index fields array containing
+//        `"_creationTime"` — all reserved; Convex appends `_creationTime`
+//        automatically and errors with `IndexNameReserved` / a schema error.
 // - Everything else (missing `args:` / `returns:` on a function object, an
 //   unbounded `.collect()`) is a soft advisory delivered via
 //   `additionalContext` on an "allow" decision.
@@ -42,6 +58,60 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { capture } from "./analytics.mjs";
+
+// The real, complete set of named exports of the `convex/server` npm package.
+// GROUNDED: `node -e 'console.log(Object.keys(require("convex/server")))'`
+// against a real `npm i convex` install (convex@1.42.1) — not hand-typed from
+// memory. Any named import from "convex/server" outside this list is either a
+// typo, a hallucinated symbol (e.g. `HttpResponse`, which does not exist —
+// use `httpAction` from `./_generated/server` and the standard `Response`),
+// or one of the generated-server aliases (`query`/`mutation`/`action`/
+// `internalQuery`/`internalMutation`/`internalAction`) that rule 3 above
+// already denies by name and that in fact live in `./_generated/server`.
+const CONVEX_SERVER_EXPORTS = new Set([
+  "HttpRouter",
+  "ROUTABLE_HTTP_METHODS",
+  "SearchFilter",
+  "actionGeneric",
+  "anyApi",
+  "componentsGeneric",
+  "createFunctionHandle",
+  "cronJobs",
+  "currentSystemUdfInComponent",
+  "defineApp",
+  "defineComponent",
+  "defineSchema",
+  "defineTable",
+  "filterApi",
+  "getFunctionAddress",
+  "getFunctionName",
+  "httpActionGeneric",
+  "httpRouter",
+  "internalActionGeneric",
+  "internalMutationGeneric",
+  "internalQueryGeneric",
+  "log",
+  "makeFunctionReference",
+  "mutationGeneric",
+  "paginationOptsValidator",
+  "paginationResultValidator",
+  "queryGeneric",
+]);
+
+// Symbols agents most often expect to be here but genuinely live elsewhere —
+// used only to make the deny message point somewhere useful.
+const CONVEX_SERVER_KNOWN_ELSEWHERE = {
+  query: "./_generated/server",
+  mutation: "./_generated/server",
+  action: "./_generated/server",
+  internalQuery: "./_generated/server",
+  internalMutation: "./_generated/server",
+  internalAction: "./_generated/server",
+  api: "./_generated/api",
+  internal: "./_generated/api",
+  httpAction: "./_generated/server",
+  HttpResponse: null, // does not exist anywhere — use httpAction + a standard Response
+};
 
 // Fire-and-forget telemetry (one event per hook run, primary finding only).
 // `capture` already swallows every error and spawns a detached child, but
@@ -274,6 +344,151 @@ try {
           `without \`"use node"\`, or convert this to an \`action\` that ` +
           `calls a query/mutation via \`ctx.runQuery\`/\`ctx.runMutation\`.`,
       );
+    }
+  }
+
+  // Rule 6: `import { ... } from "convex/server"` where ANY named import is
+  // not a real export of the package (see CONVEX_SERVER_EXPORTS above,
+  // grounded against the actual npm package). Unambiguous — an import
+  // statement can only name symbols that either exist or don't. Skip names
+  // already covered by rule 3 (query/mutation/action/internal*) so the deny
+  // reason for those stays specific to that rule; this rule catches
+  // everything else, including hallucinated symbols like `HttpResponse`.
+  {
+    const serverPkgAllowlistRe =
+      /import\s*(?:type\s*)?\{([^}]*)\}\s*from\s*["']convex\/server["']/g;
+    let allowlistMatch;
+    while ((allowlistMatch = serverPkgAllowlistRe.exec(projected)) !== null) {
+      const rawNames = allowlistMatch[1]
+        .split(",")
+        .map((n) => n.trim())
+        .filter(Boolean);
+      const rule3Names = new Set([
+        "query",
+        "mutation",
+        "action",
+        "internalQuery",
+        "internalMutation",
+        "internalAction",
+      ]);
+      for (const rawName of rawNames) {
+        // Handle `Foo as Bar` and `type Foo` forms — the exported symbol is
+        // the first token.
+        const importedName = rawName.replace(/^type\s+/, "").split(/\s+as\s+/)[0].trim();
+        if (!importedName || rule3Names.has(importedName)) continue;
+        if (CONVEX_SERVER_EXPORTS.has(importedName)) continue;
+        const elsewhere = CONVEX_SERVER_KNOWN_ELSEWHERE[importedName];
+        const fixHint =
+          elsewhere === null
+            ? `\`${importedName}\` does not exist in Convex at all — for an HTTP ` +
+              `action, use \`httpAction\` from \`"./_generated/server"\` and return ` +
+              `a standard \`Response\`, e.g. \`return new Response(JSON.stringify(x), ` +
+              `{ status: 200 })\`.`
+            : elsewhere
+              ? `\`${importedName}\` is exported from \`"${elsewhere}"\`, not ` +
+                `\`"convex/server"\` — import it from there instead.`
+              : `\`${importedName}\` is not a real \`convex/server\` export. Check ` +
+                `the spelling, or it may live in \`"./_generated/server"\` or ` +
+                `\`"./_generated/api"\` instead.`;
+        track("server_pkg_allowlist", "deny");
+        deny(
+          `convex-lint rule "convex/server export allowlist": this write ` +
+            `contains \`${snippet(allowlistMatch[0])}\` — ${fixHint}`,
+        );
+      }
+    }
+  }
+
+  // Rule 7: `app.use(X)` in convex/convex.config.ts where X is imported from
+  // a RELATIVE path (e.g. `./http`, `../lib/foo`) rather than a package's
+  // `.../convex.config` submodule. `defineApp().use(...)` only mounts
+  // installed Convex Components (`import agent from "@convex-dev/agent/convex.config"`);
+  // a same-project relative import is never a valid argument. Unambiguous
+  // only when we can trace the identifier passed to `.use(` back to a
+  // same-file `import ... from "./..."` — otherwise stays advisory.
+  if (/(^|\/)convex\/convex\.config\.ts$/.test(normalized)) {
+    const useCallRe = /\bapp(?:\w*)?\.use\(\s*([A-Za-z_$][\w$]*)\s*[),]/g;
+    let useMatch;
+    const relativeImports = new Map();
+    const packageConfigImports = new Set();
+    const importRe = /import\s+([A-Za-z_$][\w$]*)\s+from\s*["']([^"']*)["']/g;
+    let impMatch;
+    while ((impMatch = importRe.exec(projected)) !== null) {
+      const [, ident, fromPath] = impMatch;
+      if (fromPath.startsWith(".")) {
+        relativeImports.set(ident, fromPath);
+      } else if (fromPath.endsWith("/convex.config")) {
+        // A package's `.../convex.config` submodule — the canonical shape of
+        // a Convex Component. Known-good; no advisory.
+        packageConfigImports.add(ident);
+      }
+    }
+    const advisories = [];
+    while ((useMatch = useCallRe.exec(projected)) !== null) {
+      const ident = useMatch[1];
+      const fromPath = relativeImports.get(ident);
+      if (packageConfigImports.has(ident)) {
+        continue;
+      } else if (fromPath) {
+        track("app_use_relative", "deny");
+        deny(
+          `convex-lint rule "app.use() relative import": this write contains ` +
+            `\`${snippet(useMatch[0])}\` where \`${ident}\` is imported from the ` +
+            `relative path \`"${fromPath}"\` — \`app.use(...)\` in convex.config.ts ` +
+            `only accepts Convex Components (e.g. ` +
+            `\`import agent from "@convex-dev/agent/convex.config"; app.use(agent);\`), ` +
+            `never a same-project module. Remove this \`.use(${ident})\` call — a ` +
+            `relative-path module like \`"${fromPath}"\` is mounted by importing it ` +
+            `normally (e.g. an HTTP router in \`http.ts\`), not via \`app.use(...)\`.`,
+        );
+      } else {
+        advisories.push(
+          `convex-lint: \`app.use(${ident})\` in \`${filePath}\` — verify \`${ident}\` ` +
+            `is a Convex Component's \`convex.config\` default export (e.g. from ` +
+            `\`@convex-dev/<name>/convex.config\`), not a same-project module. ` +
+            `\`app.use(...)\` only accepts installed Components.`,
+        );
+      }
+    }
+    if (advisories.length > 0) {
+      track("app_use_ambiguous", "warn");
+      allowWithWarnings(advisories.slice(0, 10));
+    }
+  }
+
+  // Rule 8: reserved index names / fields in convex/schema.ts. Convex
+  // auto-appends `_creationTime` as the implicit tiebreaker on every index —
+  // naming an index `by_id`, `by_creation_time`, or anything starting with
+  // `_` is reserved (IndexNameReserved at push), and listing `_creationTime`
+  // explicitly in an index's fields array is a schema error. Unambiguous:
+  // both are literal string matches inside a `.index(...)` call.
+  if (/(^|\/)convex\/schema\.ts$/.test(normalized)) {
+    const indexCallRe = /\.index\(\s*["']([^"']*)["']\s*,\s*(\[[^\]]*\])/g;
+    let indexMatch;
+    while ((indexMatch = indexCallRe.exec(projected)) !== null) {
+      const indexName = indexMatch[1];
+      const fieldsLiteral = indexMatch[2];
+      if (indexName === "by_id" || indexName === "by_creation_time" || indexName.startsWith("_")) {
+        track("reserved_index_name", "deny");
+        deny(
+          `convex-lint rule "reserved index name": this write contains ` +
+            `\`${snippet(indexMatch[0])}\` — the index name \`"${indexName}"\` is ` +
+            `reserved. Convex auto-appends \`_creationTime\` as the implicit ` +
+            `tiebreaker on every index and reserves \`by_id\`/\`by_creation_time\`/ ` +
+            `any name starting with \`_\` for its own system indexes. Pick a name ` +
+            `after the columns instead, e.g. \`.index("by_<field>", [...])\`.`,
+        );
+      }
+      if (/["']_creationTime["']/.test(fieldsLiteral)) {
+        track("reserved_index_field", "deny");
+        deny(
+          `convex-lint rule "reserved index field": this write contains ` +
+            `\`${snippet(indexMatch[0])}\` — \`_creationTime\` cannot appear in an ` +
+            `index's fields array. Convex appends it automatically as the implicit ` +
+            `tiebreaker on every index; listing it explicitly errors at push. Remove ` +
+            `\`"_creationTime"\` from the fields array.`,
+        );
+      }
     }
   }
 

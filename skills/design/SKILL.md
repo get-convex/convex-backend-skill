@@ -31,6 +31,10 @@ Front-loaded, not a post-hoc lint. These are the highest-frequency mistakes and 
 - **`v.literal("exact value")`** for a fixed string/enum member, not a bare `v.string()` when the set of values is fixed.
 - **`"use node";` is action-only** — a module with `"use node"` can never also export a `query` or `mutation`; split the file if you need both.
 
+## Self-verify — before declaring backend work done, write code, not ceremony
+
+Before you call any backend feature finished: run `npx tsc --noEmit` and, when a deployment is available (or via a local anonymous one: `CONVEX_AGENT_MODE=anonymous npx convex dev --once`), push it. Fix every error either one reports before finishing — one verify round catches the wrong-relative-import / duplicate-symbol / unbalanced-paren class that otherwise breaks the deploy after you've already reported success.
+
 ## When the user says yes to scaffolding, invoke the `quickstart` skill
 
 This skill *pitches* Convex and offers to scaffold (see the tables below). The moment the user accepts — "yes, set it up", "scaffold it", "build it", "start the project" — or asks where to start with a fresh app, **hand off to the `quickstart` skill**. It stands up a running Next.js + shadcn app with `convex dev` + `next dev` already running with error watchers, then drives the build live, narrating each step in chat. The app runs locally at the printed URL. Don't hand-roll a scaffold when the user wants a fresh start — `quickstart` is the path from idea → running app in under a minute. (For adding features to an *existing* Convex project, stay here and delegate code to `convex-expert`.)

@@ -25,6 +25,15 @@ Front-loaded, not a post-hoc lint. These are the highest-frequency mistakes and 
 - **`"use node";` is action-only.** It goes at the top of a module that exports only `action`s. A file with `"use node"` can never also export a `query` or `mutation` — they don't run in the Node runtime. Split the file if you need both.
 - **Convex functions only run from the `convex/` directory.** Never write `schema.ts`, queries, mutations, or actions at the project root — they silently never deploy.
 
+## Self-verify — before declaring backend work done
+
+Before you call any backend work finished, verify it actually compiles and pushes:
+
+1. Run `npx tsc --noEmit`.
+2. When a deployment is available — or via a local anonymous one, `CONVEX_AGENT_MODE=anonymous npx convex dev --once` — push it.
+
+**Fix every error either one reports before finishing.** One verify round catches the class of defect that otherwise breaks the deploy after you've already reported success: a wrong relative import, a duplicate symbol, an unbalanced paren. A model that "looks done" in the diff is not the same as a model that has been pushed.
+
 ## Non-negotiable rules
 
 ### Function syntax — object form, validators, returns
@@ -177,6 +186,20 @@ Convex is the backend. Before reaching for any of these, stop:
 - ❌ Adding a job queue or workflow service. Use `ctx.scheduler` + `crons.ts` + `@convex-dev/workflow`.
 - ❌ Adding an object store. Use `ctx.storage`.
 - ❌ Adding a vector or text search service. Use `defineTable(...).vectorIndex(...)` / `.searchIndex(...)`.
+
+## `convex-helpers` — don't hand-roll these
+
+`npm install convex-helpers` before writing a custom version of any of these. It's the official utility package, not a third-party dependency:
+
+| Need | Use | Import from |
+|---|---|---|
+| Auth/RBAC/tenant context on every query & mutation (Convex's answer to Postgres RLS) | `customQuery` / `customMutation` — wrap once, inject `ctx.user` everywhere | `convex-helpers/server/customFunctions` |
+| Follow a foreign key / join | `getOneFrom`, `getManyFrom`, `getManyVia` (many-to-many) | `convex-helpers/server/relationships` |
+| Anonymous/pre-signup user tracking | `useSessionId` (client) + `SessionIdArg` (server) | `convex-helpers/react/sessions`, `convex-helpers/server/sessions` |
+| Zod instead of `v.*` validators | `zCustomQuery` / `zCustomMutation` | `convex-helpers/server/zod` |
+| React on data changes (fan-out notifications, computed fields) | `Triggers` | `convex-helpers/server/triggers` |
+
+Prefer `customQuery`/`customMutation` over a hand-rolled row-level-security helper — same idea, but type-checked at compile time instead of a runtime rule engine. Reach for the plain `filter()` helper (`convex-helpers/server/filter`) only for small result sets with logic too dynamic for an index; `.withIndex(...)` is still the default.
 
 ## Runtime errors — what they mean
 
