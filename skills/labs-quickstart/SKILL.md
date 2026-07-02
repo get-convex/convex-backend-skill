@@ -21,6 +21,21 @@ user confirms**, **published to a public `https://<app>.convex.app` URL**.
 > content with different section headings — don't re-hunt for it either.
 
 
+## Degradation rule — when the scaffold can't run, write code, not ceremony
+
+If the bootstrap can't run — a non-interactive/one-shot session, no network access, a sandboxed temp dir, or the user just wants code rather than a running app — **don't wait on the scaffold or the panel/publish machinery**. Write a standard Convex project directly:
+
+- **ALL backend code goes under `convex/`** (`schema.ts`, queries, mutations, actions) — **NEVER at the project root.** Convex functions only run from the `convex/` directory.
+- **Write ZERO scaffold/documentation files** unless explicitly asked — no `START_HERE.md`, `ARCHITECTURE.md`, `MANIFEST.txt`, or README walls. "Build me a backend" is a request for code, not a design-doc package.
+
+## Data access + imports — read before writing any convex/*.ts
+
+- Never an unbounded `.collect()` on a table that can grow — use `.withIndex(...)` + `.paginate(paginationOpts)`/`.take(n)`.
+- Index, don't filter — `.index(...)` in `schema.ts` for every read path, queried via `.withIndex(...)`; `.filter()` is a full table scan.
+- Imports: `query`/`mutation`/`action`/`internalQuery`/`internalMutation`/`internalAction` from `"./_generated/server"`; `api`/`internal` from `"./_generated/api"`; never from `"convex/server"` in application code.
+- `v.literal("exact value")` for fixed string/enum members, not a bare `v.string()`.
+- `"use node";` is action-only — never in a file that also exports a `query` or `mutation`.
+
 ## 1. Get the idea
 
 One sentence describing the app. If the user gave one, use it. If not, ask once:
