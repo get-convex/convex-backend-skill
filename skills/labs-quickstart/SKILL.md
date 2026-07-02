@@ -1,8 +1,8 @@
 ---
-name: labs-quickstart
+name: "labs-quickstart"
 description: "LABS — the FULL Convex quickstart experience: scaffold a running Next.js + shadcn app from one sentence with passkey (WebAuthn) sign-in and a live in-app Chef feedback panel pre-baked, build the idea live narrating through the panel, then PUBLISH it to a public https://<app>.convex.app URL (with the user's confirmation before publishing). For a plain local-only scaffold, use the `quickstart` skill instead."
 when_to_use: "TRIGGER when the user wants to START a new Convex app from scratch with the full experience — they ran `/labs-quickstart`, asked for the 'full' or 'labs' quickstart, or their from-scratch ask includes publishing/a public URL, sign-in/login/passkeys, or the in-app feedback panel (e.g. 'build and publish an app where users can ___', 'new app with login'). SKIP when the user wants a plain local scaffold (use `quickstart`), when there's already a Convex project in the cwd (use `design` + `convex-expert`), or when they explicitly don't want a scaffold."
-license: Apache-2.0
+license: "Apache-2.0"
 ---
 
 # Convex Labs Quickstart — full wow-shell, built live, published
@@ -20,7 +20,6 @@ user confirms**, **published to a public `https://<app>.convex.app` URL**.
 > The canonical runbook you fetch in step 2 (and the bootstrap log tail) is the *same*
 > content with different section headings — don't re-hunt for it either.
 
----
 
 ## 1. Get the idea
 
@@ -29,7 +28,6 @@ One sentence describing the app. If the user gave one, use it. If not, ask once:
 about a minute."* Don't over-interview; refinement questions sharpen scope after there
 are pixels on screen.
 
----
 
 ## 2. Scaffold the wow-shell (and emit telemetry)
 
@@ -78,7 +76,6 @@ WebFetching the URL is what fires the telemetry-3 signal, so prefer it. One
 exception: this labs release keeps **custom domains OFF** — if the runbook mentions
 offering/registering domains or `.quickstart-domains.json`, skip that part.)
 
----
 
 ## 3. Open the browser
 
@@ -86,7 +83,6 @@ The log prints `OPEN_BROWSER_URL: http://localhost:PORT`. Open it immediately (b
 building) — the whole point is the user watches the app come together. **Note this
 URL** — it's the local `SITE_URL` for auth.
 
----
 
 ## STEP A0 — wire auth (passkeys are pre-baked unless the idea asked otherwise)
 
@@ -185,7 +181,6 @@ Notes that matter:
 - **Do not unmount or move `<ChefPanel />`** while wiring the UI — the panel lives in
   `app/layout.tsx`; the provider wraps it.
 
----
 
 ## STEP A / B — build the idea live
 
@@ -216,7 +211,6 @@ Pre-yield checklist: `npx tsc --noEmit` clean, error logs re-read and clean,
 `metadata.title` names *this* app, and the running page shows the passkey sign-in UI
 and (after you register a test passkey) the authed view.
 
----
 
 ## STEP C — publish to *.convex.app (ASK THE USER FIRST)
 
@@ -285,7 +279,6 @@ step 1 don't match the `.convex.app` host — fix them and re-publish.
 register domains, and don't look for `.quickstart-domains.json`. (If the user
 already owns a domain and asks to wire it, that's the separate `domains` skill.)
 
----
 
 ## On failure / friction — offer to self-report (WITH the user's permission)
 
