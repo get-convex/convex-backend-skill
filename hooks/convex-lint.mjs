@@ -33,6 +33,24 @@
 //     5. A file with `"use node"` that also defines `query(`/`mutation(` —
 //        queries and mutations cannot run in the Node.js runtime. Hard deploy
 //        failure.
+//     6. `import { ... } from "convex/server"` naming a symbol that isn't a
+//        real export of the `convex/server` package entrypoint (e.g.
+//        `HttpResponse`, which doesn't exist — the fix is `httpAction` from
+//        `./_generated/server` plus a web-standard `Response`). Grounded
+//        against the actual installed package's export list (see
+//        `CONVEX_SERVER_EXPORTS` below) so this can never drift into a false
+//        positive as the SDK evolves in this repo's own dependency.
+//     7. `.index("by_id", ...)`, `.index("by_creation_time", ...)`, an index
+//        name starting with `_`, or `_creationTime` listed as a column in an
+//        index's fields array, inside a schema file — all four are
+//        `IndexNameReserved` hard deploy failures (`_creationTime` is an
+//        automatic implicit tiebreaker Convex appends to every index).
+// - `app.use(X)` in `convex.config.ts` where `X`'s import comes from a
+//   relative path (e.g. `./http`) is an ADVISORY, not a deny — legitimate
+//   components are mounted via a package's `convex.config` subpath
+//   (`app.use(agent)` from `@convex-dev/agent/convex.config`), but a
+//   same-file relative import isn't unambiguously wrong (could be a local
+//   sub-app in rare setups), so this stays soft per the deny discipline below.
 // - Everything else (missing `args:` / `returns:` on a function object, an
 //   unbounded `.collect()`) is a soft advisory delivered via
 //   `additionalContext` on an "allow" decision.
@@ -92,6 +110,45 @@ function allowWithWarnings(warnings) {
     },
   });
 }
+
+// Ground truth for Rule 6: the real named exports of the `convex/server`
+// package entrypoint. Generated with:
+//   cd /tmp && npm i convex --no-save && node -e \
+//     'console.log(JSON.stringify(Object.keys(require("convex/server"))))'
+// against convex@1.42.1 (2026-07-02). Re-run that command and update this
+// list if the package's public surface changes — it is intentionally a
+// static snapshot, not a runtime `require`, because this hook must work
+// inside a target project that may have a different (or no) `convex`
+// resolution from this plugin's own process.
+const CONVEX_SERVER_EXPORTS = new Set([
+  "HttpRouter",
+  "ROUTABLE_HTTP_METHODS",
+  "actionGeneric",
+  "anyApi",
+  "componentsGeneric",
+  "createFunctionHandle",
+  "cronJobs",
+  "currentSystemUdfInComponent",
+  "defineApp",
+  "defineComponent",
+  "defineSchema",
+  "defineTable",
+  "filterApi",
+  "getFunctionAddress",
+  "getFunctionName",
+  "httpActionGeneric",
+  "httpRouter",
+  "internalActionGeneric",
+  "internalMutationGeneric",
+  "internalQueryGeneric",
+  "log",
+  "makeFunctionReference",
+  "mutationGeneric",
+  "queryGeneric",
+  "paginationOptsValidator",
+  "paginationResultValidator",
+  "SearchFilter",
+]);
 
 function readStdin() {
   try {
@@ -277,6 +334,97 @@ try {
     }
   }
 
+  // Rule 6: `import { ... } from "convex/server"` naming a symbol that
+  // isn't a real export of that package entrypoint. Grounded against
+  // CONVEX_SERVER_EXPORTS above. Unambiguous: any named import whose
+  // identifier isn't in the real export set is a hallucinated symbol that
+  // will fail at build time. Skip default/namespace imports and `as`
+  // aliases (check the local-facing bound name would be wrong; instead we
+  // check the exported name, i.e. the part before `as` if present).
+  const serverPkgAnyImportRe =
+    /import\s*\{([^}]*)\}\s*from\s*["']convex\/server["']/g;
+  let serverAnyMatch;
+  while ((serverAnyMatch = serverPkgAnyImportRe.exec(projected)) !== null) {
+    const names = serverAnyMatch[1];
+    const parts = names
+      .split(",")
+      .map((p) => p.trim())
+      .filter(Boolean);
+    for (const part of parts) {
+      // `Foo` or `Foo as Bar` — the exported name is the part before `as`.
+      const exportedName = part.split(/\s+as\s+/)[0].trim();
+      if (!exportedName) continue;
+      if (!CONVEX_SERVER_EXPORTS.has(exportedName)) {
+        track("server_pkg_bad_symbol", "deny");
+        const hint =
+          exportedName === "HttpResponse"
+            ? ` \`HttpResponse\` doesn't exist — use \`httpAction\` from ` +
+              `\`./_generated/server\` and return a web-standard \`Response\`.`
+            : ` \`${exportedName}\` is not exported by \`convex/server\`.`;
+        deny(
+          `convex-lint rule "convex/server bad symbol": this write ` +
+            `contains \`${snippet(serverAnyMatch[0])}\` —${hint} Real ` +
+            `exports of \`convex/server\` include \`defineSchema\`, ` +
+            `\`defineTable\`, \`httpRouter\`, \`defineApp\`, ` +
+            `\`defineComponent\`, and the generic function-constructor ` +
+            `variants (\`queryGeneric\`, \`mutationGeneric\`, etc.) — but ` +
+            `\`query\`/\`mutation\`/\`action\`/\`httpAction\`/\`internal\`/` +
+            `\`api\` all come from \`./_generated/server\` or ` +
+            `\`./_generated/api\` instead.`,
+        );
+      }
+    }
+  }
+
+  // Rule 7 (schema files only): reserved index names. Convex auto-appends
+  // `_creationTime` as the implicit tiebreaker on every index, and reserves
+  // `by_id` / `by_creation_time` / any name starting with `_` — all four are
+  // unambiguous `IndexNameReserved` hard deploy failures documented in this
+  // plugin's own skills (agents/convex-expert.md, skills/design/SKILL.md).
+  // Scoped to files named `schema.ts` so a `.index(` call elsewhere (e.g. in
+  // generated typing examples) can't false-positive.
+  const normalizedForSchema = normalized;
+  const isSchemaFile = /(^|\/)schema\.ts$/.test(normalizedForSchema);
+  if (isSchemaFile) {
+    const indexCallRe = /\.index\(\s*(["'`])((?:(?!\1).)*)\1\s*,\s*(\[[^\]]*\])/g;
+    let indexMatch;
+    while ((indexMatch = indexCallRe.exec(projected)) !== null) {
+      const indexName = indexMatch[2];
+      const fieldsLiteral = indexMatch[3];
+      if (indexName === "by_id" || indexName === "by_creation_time") {
+        track("reserved_index_name", "deny");
+        deny(
+          `convex-lint rule "reserved index name": this write contains ` +
+            `\`${snippet(indexMatch[0])}\` — \`${indexName}\` is a ` +
+            `reserved index name (Convex auto-appends \`_creationTime\` as ` +
+            `the implicit tiebreaker on every index, and \`by_id\` / ` +
+            `\`by_creation_time\` are reserved). Rename the index to ` +
+            `describe the field(s) it covers, e.g. \`.index("by_<field>", ` +
+            `[...])\`.`,
+        );
+      }
+      if (indexName.startsWith("_")) {
+        track("reserved_index_name", "deny");
+        deny(
+          `convex-lint rule "reserved index name": this write contains ` +
+            `\`${snippet(indexMatch[0])}\` — index names starting with ` +
+            `\`_\` are reserved. Rename the index to describe the ` +
+            `field(s) it covers, e.g. \`.index("by_<field>", [...])\`.`,
+        );
+      }
+      if (/_creationTime/.test(fieldsLiteral)) {
+        track("reserved_index_name", "deny");
+        deny(
+          `convex-lint rule "reserved index name": this write contains ` +
+            `\`${snippet(indexMatch[0])}\` — \`_creationTime\` cannot be ` +
+            `listed as an index field; Convex auto-appends it as the ` +
+            `implicit tiebreaker on every index. Remove it from the ` +
+            `fields array.`,
+        );
+      }
+    }
+  }
+
   // --- SOFT WARNINGS (never deny) ----------------------------------------
   // Heuristic: each `query({`-style block whose first ~300 chars contain no
   // `args:` / `returns:` gets one advisory line.
@@ -341,6 +489,48 @@ try {
         `or \`.paginate(paginationOpts)\` instead of \`.collect()\` on a ` +
         `table that can grow.`,
     );
+  }
+
+  // Advisory (convex.config.ts only): `app.use(X)` where `X` was imported
+  // from a relative path (e.g. `import http from "./http"`). Real
+  // components mount via a package's `convex.config` subpath
+  // (`app.use(agent)` from `import agent from "@convex-dev/agent/convex.config"`)
+  // — a relative-path import feeding `app.use(...)` is very likely a mixup
+  // with an unrelated local module (e.g. an HTTP router) rather than a
+  // component. This is advisory, not a deny: an app *could* have a
+  // legitimate local sub-app in rare setups, so it isn't unambiguous enough
+  // for a hard deny per this hook's own discipline (false-positive denies
+  // are the worst outcome).
+  const isConvexConfigFile = /(^|\/)convex\.config\.ts$/.test(normalized);
+  if (isConvexConfigFile) {
+    const relativeImportNames = new Map();
+    const relativeImportRe =
+      /import\s+(\w+)\s+from\s*["'](\.\.?\/[^"']*)["']/g;
+    let relImportMatch;
+    while ((relImportMatch = relativeImportRe.exec(projected)) !== null) {
+      relativeImportNames.set(relImportMatch[1], relImportMatch[2]);
+    }
+    if (relativeImportNames.size > 0) {
+      const appUseRe = /\bapp\.use\(\s*(\w+)\s*[,)]/g;
+      let appUseMatch;
+      while ((appUseMatch = appUseRe.exec(projected)) !== null) {
+        const usedName = appUseMatch[1];
+        if (relativeImportNames.has(usedName)) {
+          if (firstWarningRule === null) firstWarningRule = "app_use_relative_import";
+          warnings.push(
+            `convex-lint: \`app.use(${usedName})\` in \`${filePath}\` — ` +
+              `\`${usedName}\` was imported from a relative path ` +
+              `(\`${relativeImportNames.get(usedName)}\`), not a package's ` +
+              `\`convex.config\` subpath. Components mount like ` +
+              `\`import ${usedName} from "@convex-dev/<pkg>/convex.config"; ` +
+              `app.use(${usedName});\` — if \`${usedName}\` is meant to be a ` +
+              `component, install its package; if it's something else ` +
+              `(e.g. an HTTP router), it likely doesn't belong in ` +
+              `\`app.use(...)\` at all.`,
+          );
+        }
+      }
+    }
   }
 
   if (warnings.length > 0) {

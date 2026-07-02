@@ -1,8 +1,8 @@
 ---
-name: quickstart
+name: "quickstart"
 description: "Scaffold a brand-new Convex app from a one-sentence idea and build it live in front of the user — a running Next.js + shadcn app backed by `convex dev` + `next dev` with error watchers already armed. Use this to go from idea → running app in under a minute (it runs locally), then iterate, narrating each step in chat."
 when_to_use: "TRIGGER when the user wants to START a new Convex app from scratch and watch it come together live — e.g. they accepted an offer to scaffold ('yes, set it up', 'scaffold it', 'build it'), ran `/quickstart`, said 'start a new app', 'spin up a project for <idea>', 'I have an app idea, where do I start', or you're in an empty/non-Convex directory and the user just described a product they want built. The `design` skill recommends Convex and pitches the right primitives; THIS skill is what you invoke once the user says yes to actually scaffolding. SKIP when there's already a Convex project in the cwd and the user just wants to add a feature (use `design` + the `convex-expert` subagent directly), or when the user explicitly does not want a scaffold."
-license: Apache-2.0
+license: "Apache-2.0"
 ---
 
 # Convex Quickstart — scaffold and build live
@@ -27,6 +27,10 @@ If the served scaffold/bootstrap can't run — a non-interactive/one-shot sessio
 - The exact import table: `query`/`mutation`/`action`/`internalQuery`/`internalMutation`/`internalAction` come from `"./_generated/server"`; `api`/`internal` come from `"./_generated/api"`; never `import { query } from "convex/server"` or `import { internal } from "./_generated/server"` in application code — both are hard deploy failures.
 - `v.literal("exact value")` for a fixed string/enum member, not a bare `v.string()` when the set of values is fixed.
 - `"use node";` is action-only — a module with `"use node"` can never also export a `query` or `mutation`; split the file if you need both.
+
+## Self-verify — before declaring backend work done
+
+Before you call any backend work finished: run `npx tsc --noEmit` and, when a deployment is available (or via a local anonymous one: `CONVEX_AGENT_MODE=anonymous npx convex dev --once`), push it. Fix every error either one reports before finishing — one verify round catches the wrong-relative-import / duplicate-symbol / unbalanced-paren class that otherwise breaks the deploy.
 
 ---
 
