@@ -14,6 +14,13 @@
 //   Never triggers a network fetch (`npx --no-install`).
 // - Uses Node (guaranteed in a Convex project) for both JSON parsing and
 //   emitting, so multi-line tsc output is escaped correctly.
+// - Fast no-op path (Finding 4): the `isConvexTs` path check runs
+//   immediately after parsing stdin — before the tsconfig directory walk and
+//   long before `execFileSync(tsc, ...)`, the actually expensive step. A
+//   non-convex/*.ts write (or any write when there's no convex/ dir at all)
+//   exits via `emit(null)` without touching the filesystem beyond stdin, so
+//   the no-op case costs Node startup only (single-digit/low-double-digit ms
+//   locally), not a tsc invocation.
 
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
