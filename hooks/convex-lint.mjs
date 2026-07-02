@@ -16,15 +16,26 @@
 //   applying the replacement(s) in order. If the file is missing or an
 //   old_string doesn't match, we stay silent — the tool itself will surface
 //   that error; it is not the linter's job.
-// - Hard denies are limited to the two patterns that are unambiguous in a
-//   convex/ source file:
+// - Hard denies are limited to patterns that are unambiguous in a convex/
+//   source file:
 //     1. `.filter(q => … q.field(…))` on a db query — the `q.field(` call
 //        inside the filter callback is the discriminator; JS array `.filter`
 //        callbacks never contain `q.field(`. Fix: `.withIndex(...)`.
 //     2. Old positional function syntax `query(async (ctx, …)` — Convex
 //        functions must use the object form with `args`/`returns`/`handler`.
-// - Everything else (missing `args:` / `returns:` on a function object) is a
-//   soft advisory delivered via `additionalContext` on an "allow" decision.
+//     3. `import { ... } from "convex/server"` where the import list contains
+//        query|mutation|action|internal{Query,Mutation,Action} — those are
+//        exported from the generated `./_generated/server`, not the package
+//        entrypoint. A hard deploy failure (Finding 3).
+//     4. `import { internal } from "./_generated/server"` or
+//        `import { api } from "./_generated/server"` — `internal`/`api` live
+//        in `./_generated/api`, not `./_generated/server`. Hard deploy failure.
+//     5. A file with `"use node"` that also defines `query(`/`mutation(` —
+//        queries and mutations cannot run in the Node.js runtime. Hard deploy
+//        failure.
+// - Everything else (missing `args:` / `returns:` on a function object, an
+//   unbounded `.collect()`) is a soft advisory delivered via
+//   `additionalContext` on an "allow" decision.
 // - Edge discipline: a hard-deny false positive is the worst outcome. When in
 //   doubt, allow; any internal error → exit 0 silent (try/catch everywhere).
 
@@ -35,6 +46,13 @@ import { capture } from "./analytics.mjs";
 // Fire-and-forget telemetry (one event per hook run, primary finding only).
 // `capture` already swallows every error and spawns a detached child, but
 // wrap it anyway so an analytics failure can never change hook behavior.
+// (`analytics.mjs` only pulls in cheap Node builtins — node:child_process,
+// node:crypto, node:fs, node:os, node:path, node:url — so the static import
+// costs single-digit milliseconds; a lazy `import()` here would race
+// `process.exit(0)` in `emit()` and could silently drop the detached-spawn
+// telemetry call, which is worse than the import cost. See Finding 4: the
+// no-op path's real cost is the `isConvexTs` check happening first, not this
+// import — verified below, that check runs before any file I/O or tsc call.)
 function track(rule, action) {
   try {
     capture("lint_hook_fired", { rule, action });
@@ -188,6 +206,77 @@ try {
     );
   }
 
+  // Rule 3: `import { ... } from "convex/server"` where the import list
+  // contains a function constructor. Those live in the generated
+  // `./_generated/server`, not the package entrypoint — this is a hard
+  // deploy failure (Finding 3), and the pattern is unambiguous: an import
+  // statement literally naming the "convex/server" module specifier.
+  const serverPkgImportRe =
+    /import\s*\{([^}]*)\}\s*from\s*["']convex\/server["']/g;
+  let serverPkgMatch;
+  while ((serverPkgMatch = serverPkgImportRe.exec(projected)) !== null) {
+    const names = serverPkgMatch[1];
+    const fnNameRe =
+      /(^|[,\s])(query|mutation|action|internalQuery|internalMutation|internalAction)($|[,\s:])/;
+    if (fnNameRe.test(names)) {
+      track("server_pkg_import", "deny");
+      deny(
+        `convex-lint rule "convex/server import": this write contains ` +
+          `\`${snippet(serverPkgMatch[0])}\` — \`query\`/\`mutation\`/` +
+          `\`action\` (and their internal* variants) are exported from the ` +
+          `generated \`./_generated/server\`, not the \`convex/server\` ` +
+          `package entrypoint. Fix: ` +
+          `\`import { ${names.trim()} } from "./_generated/server";\`.`,
+      );
+    }
+  }
+
+  // Rule 4: `import { internal } from "./_generated/server"` or
+  // `import { api } from "./_generated/server"`. `internal`/`api` are
+  // exported from `./_generated/api`, not `./_generated/server` — a hard
+  // deploy failure (Finding 3), unambiguous because it names the exact
+  // generated module specifier.
+  const genServerImportRe =
+    /import\s*\{([^}]*)\}\s*from\s*["']\.\/_generated\/server["']/g;
+  let genServerMatch;
+  while ((genServerMatch = genServerImportRe.exec(projected)) !== null) {
+    const names = genServerMatch[1];
+    const badNameRe = /(^|[,\s])(internal|api)($|[,\s:])/;
+    if (badNameRe.test(names)) {
+      track("generated_server_import", "deny");
+      deny(
+        `convex-lint rule "_generated/server import": this write contains ` +
+          `\`${snippet(genServerMatch[0])}\` — \`internal\`/\`api\` are ` +
+          `exported from \`./_generated/api\`, not \`./_generated/server\`. ` +
+          `Fix: import them from ` +
+          `\`import { internal, api } from "./_generated/api";\` (keep any ` +
+          `other names from this import, e.g. \`query\`/\`mutation\`, on ` +
+          `\`./_generated/server\`).`,
+      );
+    }
+  }
+
+  // Rule 5: `"use node"` in a file that also defines `query(` or
+  // `mutation(`. Queries and mutations cannot run in the Node.js runtime —
+  // a hard deploy failure. Unambiguous: the directive plus a query/mutation
+  // constructor call in the same projected file.
+  const useNodeRe = /^\s*["']use node["'];?\s*$/m;
+  if (useNodeRe.test(projected)) {
+    const queryOrMutationRe = /\b(query|mutation)\s*\(/;
+    const qmMatch = queryOrMutationRe.exec(projected);
+    if (qmMatch) {
+      track("use_node_query_mutation", "deny");
+      deny(
+        `convex-lint rule "\\"use node\\" with query/mutation": this file ` +
+          `has \`"use node"\` at the top and also defines \`${snippet(qmMatch[0])}` +
+          `…)\` — queries and mutations cannot run in the Node.js runtime, ` +
+          `only actions can. Move ${qmMatch[1]} definitions to a file ` +
+          `without \`"use node"\`, or convert this to an \`action\` that ` +
+          `calls a query/mutation via \`ctx.runQuery\`/\`ctx.runMutation\`.`,
+      );
+    }
+  }
+
   // --- SOFT WARNINGS (never deny) ----------------------------------------
   // Heuristic: each `query({`-style block whose first ~300 chars contain no
   // `args:` / `returns:` gets one advisory line.
@@ -215,6 +304,45 @@ try {
       );
     }
   }
+  // Advisory: unbounded `.collect()`. Find each `ctx.db.query(...)` call and
+  // walk forward through its method chain up to the first statement
+  // terminator (`;`, or a blank line, capped at 500 chars so one bad chain
+  // can't scan the whole file). If the chain reaches `.collect()` without
+  // `.withIndex(`, `.take(`, or `.paginate(` appearing anywhere in it, that's
+  // an unbounded full-table scan materialized into memory — the dominant
+  // defect class from the eval (Finding 2). This never denies: `.collect()`
+  // is legitimate on small/bounded tables and the analyzer can't know table
+  // size, so it's advisory-only, same discipline as the args/returns checks.
+  const dbQueryRe = /ctx\.db\.query\(/g;
+  let dq;
+  while ((dq = dbQueryRe.exec(projected)) !== null) {
+    const chainEnd = Math.min(projected.length, dq.index + 500);
+    let chain = projected.slice(dq.index, chainEnd);
+    // Trim the chain at the first statement-ish boundary so we don't bleed
+    // into unrelated following code.
+    const terminatorMatch = /;|\n\s*\n/.exec(chain);
+    if (terminatorMatch) chain = chain.slice(0, terminatorMatch.index);
+    const collectMatch = /\.collect\(\s*\)/.exec(chain);
+    if (!collectMatch) continue;
+    const isBounded =
+      /\.withIndex\(/.test(chain) ||
+      /\.take\(/.test(chain) ||
+      /\.paginate\(/.test(chain);
+    if (isBounded) continue;
+    if (firstWarningRule === null) firstWarningRule = "unbounded_collect";
+    warnings.push(
+      `convex-lint: an unbounded \`.collect()\` in \`${filePath}\` — ` +
+        `\`${snippet(chain.slice(0, collectMatch.index + collectMatch[0].length))}\` ` +
+        `has no \`.withIndex(...)\`, \`.take(n)\`, or \`.paginate(...)\` in ` +
+        `the chain, so it loads the entire table into memory on every call. ` +
+        `Define an index in convex/schema.ts (\`.index("by_<field>", ` +
+        `["<field>"])\`) and query it with \`.withIndex("by_<field>", q => ` +
+        `q.eq("<field>", value))\`, then bound the result with \`.take(n)\` ` +
+        `or \`.paginate(paginationOpts)\` instead of \`.collect()\` on a ` +
+        `table that can grow.`,
+    );
+  }
+
   if (warnings.length > 0) {
     track(firstWarningRule, "warn");
     allowWithWarnings(warnings.slice(0, 10));

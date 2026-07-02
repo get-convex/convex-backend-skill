@@ -23,7 +23,14 @@ jobs:
           done
 
       - name: Check hook script syntax
-        run: node --check hooks/convex-typecheck.mjs
+        run: |
+          node --check hooks/convex-typecheck.mjs
+          node --check hooks/convex-lint.mjs
+          node --check hooks/analytics.mjs
+          node --check hooks/session-start.mjs
+
+      - name: Run hook unit tests
+        run: node --test hooks/*.test.mjs
 
       - name: Install Claude Code CLI
         run: npm install -g @anthropic-ai/claude-code
