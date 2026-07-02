@@ -21,13 +21,13 @@
         ]
       }
     ],
-    "PostToolUse": [
+    "Stop": [
       {
-        "matcher": "Write|Edit|MultiEdit",
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/convex-typecheck.mjs\""
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/convex-typecheck.mjs\"",
+            "timeout": 180
           }
         ]
       }
