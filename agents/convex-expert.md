@@ -22,8 +22,16 @@ Front-loaded, not a post-hoc lint. These are the highest-frequency mistakes and 
 
   `import { query } from "convex/server"` and `import { internal } from "./_generated/server"` are both hard deploy failures — `convex/server` is the framework package, not your generated codegen.
 - **`v.literal("exact value")`** for a fixed string/enum member — e.g. `v.union(v.literal("open"), v.literal("closed"))` — not a bare `v.string()` when the set of values is fixed.
+- **Bound every numeric arg that becomes a delta.** A `value`/`delta`/`amount` field typed bare `v.number()` and then added onto an existing balance, score, or quantity (`patch(id, { score: existing.score + args.value })`) lets a client send an arbitrary or negative number and corrupt that field — this is a common real defect (a vote endpoint accepting `v.number()` let a client inflate any score arbitrarily; an inventory endpoint let `NaN`/`Infinity` quantities through unguarded arithmetic). If the value is one of a fixed set (a vote is `+1`/`-1`), use `v.union(v.literal(1), v.literal(-1))`. If it's a free magnitude, validate explicitly in the handler — reject `NaN`, `Infinity`, and out-of-range values before using it.
+- **A retried mutation should be a no-op, not a toggle.** An HTTP-layer retry of an identical request (same user, same target, same value) is the normal shape of a network retry — if the mutation's logic is "if a matching row exists, delete it, else create it" (a naive toggle), the retry silently undoes the first call's effect. Prefer `requestId`-keyed idempotency (check for an existing row with the same client-supplied request id and short-circuit) over toggle-on-presence logic for anything reachable from an HTTP endpoint.
 - **`"use node";` is action-only.** It goes at the top of a module that exports only `action`s. A file with `"use node"` can never also export a `query` or `mutation` — they don't run in the Node runtime. Split the file if you need both.
+- **Never name exports with JS reserved words.** `export const delete = mutation(...)` fails to build (`Expected identifier but found "delete"`) — `delete`, `new`, `class`, `function`, `return`, `import`, `default`, `typeof`, `void`, etc. can't be export names. Use a synonym: `remove`, `destroy`, `create`.
+- **Node builtins need a `"use node"` action file — prefer Web Crypto.** `import crypto from "crypto"` (or `fs`/`path`/`http`/`child_process`/`os`, with or without the `node:` prefix) in any non-`"use node"` file — including `http.ts` route handlers, not just queries/mutations — fails to bundle: Convex's default runtime is a V8 isolate with no Node builtins. Either move that code into an action file starting with `"use node";`, or, for crypto specifically, use the ambient Web Crypto API (`crypto.subtle`, `crypto.randomUUID()`) which needs no import and runs in the default runtime.
 - **Convex functions only run from the `convex/` directory.** Never write `schema.ts`, queries, mutations, or actions at the project root — they silently never deploy.
+- **`httpRouter` has no Express-style `:param` routes.** `http.route({ path: "/api/users/:userId", ... })` only ever matches that literal string — Convex's router is exact-match or `pathPrefix`, never a dynamic segment. Use `pathPrefix: "/api/users/"` and parse the trailing segment yourself: `new URL(request.url).pathname.split("/").pop()`. A model that writes `:id`/`:param` routes ships an app where every parameterized endpoint is dead code — this is one of the most common defects in generated Convex backends.
+- **Every `http.route({...})` `handler:` must be wrapped in `httpAction(...)`** (imported from `./_generated/server`) — a bare `async (ctx, request) => {...}` is not a valid HTTP action even though it type-checks.
+- **`ctx.runQuery`/`ctx.runMutation`/`ctx.runAction` take a codegen'd function reference (`api.foo.bar` / `internal.foo.bar`), never the raw imported function.** `import * as queries from "./queries"; ctx.runQuery(queries.getX, ...)` compiles (both shapes are structurally callable) but fails at runtime — it needs `import { api } from "./_generated/api"; ctx.runQuery(api.queries.getX, ...)`.
+- **Never call `ctx.runQuery`/`ctx.runMutation` from inside a `query` handler.** Queries must be pure reads within the same transaction; call the other query's logic directly (extract a shared helper) or move the composition into an action.
 
 ## Self-verify — before declaring backend work done
 
@@ -83,6 +91,7 @@ defineTable({ author: v.string(), channel: v.string(), text: v.string() })
 - **Add an index for every read path.** Never `.filter()` for anything you'd put in a SQL `WHERE`. Use `withIndex(...)`.
 - Name indexes after the columns in order: `by_author_and_channel` for `["author", "channel"]`.
 - **Never include `_creationTime` as a column in a custom index.** Convex appends it automatically. Writing `["author", "_creationTime"]` errors at push as `IndexNameReserved`.
+- **Table names can't start with `_` either.** `_migrations: defineTable(...)` errors at push as `TableNameReserved` — same underscore-prefix rule as index names, just one level up. Drop the leading underscore (`migrations: defineTable(...)`).
 
 ### Schema evolution
 
@@ -114,6 +123,7 @@ Hitting a limit = redesign, not retry. Paginate (`paginationOptsValidator` + `.p
 ### Auth
 
 - `await ctx.auth.getUserIdentity()` in any function that requires login. Returns `null` if unauthenticated — handle both branches.
+- **Check every mutation independently — don't generalize an auth check across a file.** A `ctx.auth`/ownership check present in one mutation does not mean a sibling mutation in the same file is also covered; each public `mutation`/`query` that trusts a client-supplied `userId`/`authorId`/`ownerId` arg without an independent `ctx.auth.getUserIdentity()` call (or a comparison against it) is a separate authz bug, even next to a function that does it right. This is a common false-negative: a model that sees one correct check in a file assumes the pattern applies everywhere and skips it on the next mutation down.
 - Don't roll your own `users`/`sessions`/`accounts` tables. Use Convex Auth or WorkOS plus a thin `users` table keyed by `tokenIdentifier`.
 - **Setting up Convex Auth? `convex/auth.config.ts` is MANDATORY — emit it every time, same turn as `auth.ts`.** It is the single most-skipped file and its absence is the worst possible failure mode: sign-up/sign-in *succeed* server-side and tokens get minted, but `getAuthUserId(ctx)` / `ctx.auth.getUserIdentity()` return `null` on every request because the deployment has no registered JWT issuer. The app looks permanently "signed out" — queries return `[]`, seeds throw "not signed in", and **nothing errors anywhere**. Auth is not wired until this file exists next to `auth.ts`, `http.ts`, and `authTables`:
   ```ts
@@ -213,7 +223,9 @@ Prefer `customQuery`/`customMutation` over a hand-rolled row-level-security help
 | `Too many writes in a single function execution` | Single transaction > ~8K writes | Batch via `ctx.scheduler` or `@convex-dev/workpool` |
 | `OCC conflict` | Two mutations stomped on the same doc | Reduce contention; sharded counters for hot increments |
 | `IndexNameReserved` | Index named `by_id`, `by_creation_time`, or starts with `_` | Rename it |
-| `use node` in error | Imported a Node-only module into a default V8 file | Add `"use node";` at the top, or move to an action |
+| `TableNameReserved` | Table name starts with `_` (e.g. `_migrations`) | Drop the leading underscore |
+| `Expected identifier but found "delete"` (or another keyword) | `export const delete = ...` — export name is a JS reserved word | Rename to a synonym (`remove`, `destroy`) |
+| `use node` in error | Imported a Node-only module (e.g. `crypto`, `fs`) into a default V8 file — including `http.ts` route handlers | Add `"use node";` at the top and move to an action, or use Web Crypto (`crypto.subtle`) instead of `import`ing `crypto` |
 | `TypeError: Cannot read properties of null (reading 'redirect')` | Convex Auth missing env keys | `npx @convex-dev/auth --skip-git-check --web-server-url <url>` |
 | App stuck "signed out" — sign-in succeeds, tokens mint, but `getAuthUserId`/`getUserIdentity` is always `null`, queries return `[]`, **no error** | `convex/auth.config.ts` was never created (no registered JWT issuer) | Create `convex/auth.config.ts` (see Auth section) and re-push |
 | `nonInteractiveError` / `Cannot prompt for input` | TTY-required prompt under a non-TTY harness | `CONVEX_AGENT_MODE=anonymous` before `npx convex dev` |
