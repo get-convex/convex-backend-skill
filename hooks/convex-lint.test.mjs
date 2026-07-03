@@ -1089,6 +1089,9 @@ test("advises on unchecked v.number() vote value (forum/haiku votes.ts:30 repro)
 });
 
 test("does not advise when the vote value is bounded with v.union(v.literal(...))", () => {
+  // ctx.auth check included so this fixture isolates the delta-bound
+  // advisory only — without it, the identity-arg-no-ctx.auth advisory
+  // (added later in this file) would also fire on `userId: v.id(...)` here.
   const result = runHook(
     writePayload(
       "/tmp/proj/convex/votes.ts",
@@ -1101,11 +1104,175 @@ test("does not advise when the vote value is bounded with v.union(v.literal(...)
         `    value: v.union(v.literal(1), v.literal(-1)),\n` +
         `  },\n` +
         `  returns: v.null(),\n` +
+        `  handler: async (ctx, args) => {\n` +
+        `    const identity = await ctx.auth.getUserIdentity();\n` +
+        `    if (!identity) throw new Error("401");\n` +
+        `    return null;\n` +
+        `  },\n` +
+        `});\n`,
+    ),
+  );
+  assertAllowedSilent(result);
+});
+
+// --- Advisory: public fn takes an identity arg with no ctx.auth anywhere ---
+// (mechanically-detectable slice of FLYWHEEL.md turn 1 pattern 1 — "trusts
+// client userId, no ctx.auth", 25 of 214 confirmed defects; the largest
+// single real-defect cluster in the corpus.)
+
+test("advises on userId: v.id() with zero ctx.auth in the function (forum votes.ts repro)", () => {
+  // Real shape: forum-convex-claude-claude-fable-5-plugin-pv16-plugin-k1's
+  // votes.ts `cast` mutation (and the haiku sibling's `voteOnQuestion`) takes
+  // `userId: v.string()`/`v.id("users")` and normalizes/looks it up with zero
+  // `ctx.auth` reference anywhere in the file — any caller can vote (or
+  // downvote a victim's post) as any user id they can obtain from a public
+  // list endpoint.
+  const result = runHook(
+    writePayload(
+      "/tmp/proj/convex/votes.ts",
+      `import { mutation } from "./_generated/server";\n` +
+        `import { v } from "convex/values";\n` +
+        `export const cast = mutation({\n` +
+        `  args: {\n` +
+        `    userId: v.id("users"),\n` +
+        `    targetType: v.union(v.literal("question"), v.literal("answer")),\n` +
+        `    targetId: v.id("questions"),\n` +
+        `    value: v.union(v.literal(1), v.literal(-1)),\n` +
+        `  },\n` +
+        `  returns: v.null(),\n` +
+        `  handler: async (ctx, args) => {\n` +
+        `    const user = await ctx.db.get(args.userId);\n` +
+        `    if (!user) throw new Error("404: user not found");\n` +
+        `    return null;\n` +
+        `  },\n` +
+        `});\n`,
+    ),
+  );
+  assertAdvisory(result, "lets any caller impersonate another user");
+  const parsed = parseResponse(result.stdout);
+  assert.ok(
+    parsed.hookSpecificOutput.additionalContext.includes("userId"),
+    "advisory should name the offending field",
+  );
+});
+
+test("advises on ownerId: v.id() taken by a public query with no ctx.auth (shop dashboard-style repro)", () => {
+  // Real shape: shop-convex-claude-claude-haiku-4-5-plugin-pv16-plugin-k1's
+  // `getSellerDashboard`/`getUserOrders` queries take a client-supplied
+  // `userId` and return another party's revenue/order history with no auth
+  // check — the same missing-ctx.auth shape on the read side, not just
+  // mutations.
+  const result = runHook(
+    writePayload(
+      "/tmp/proj/convex/queries.ts",
+      `import { query } from "./_generated/server";\n` +
+        `import { v } from "convex/values";\n` +
+        `export const getUserOrders = query({\n` +
+        `  args: { ownerId: v.id("users") },\n` +
+        `  returns: v.array(v.any()),\n` +
+        `  handler: async (ctx, args) => {\n` +
+        `    return await ctx.db\n` +
+        `      .query("orders")\n` +
+        `      .withIndex("by_owner", (q) => q.eq("ownerId", args.ownerId))\n` +
+        `      .collect();\n` +
+        `  },\n` +
+        `});\n`,
+    ),
+  );
+  assertAdvisory(result, "ownerId");
+});
+
+test("does not advise when the handler checks ctx.auth (correct pattern)", () => {
+  const result = runHook(
+    writePayload(
+      "/tmp/proj/convex/votes.ts",
+      `import { mutation } from "./_generated/server";\n` +
+        `import { v } from "convex/values";\n` +
+        `export const cast = mutation({\n` +
+        `  args: { userId: v.id("users"), value: v.union(v.literal(1), v.literal(-1)) },\n` +
+        `  returns: v.null(),\n` +
+        `  handler: async (ctx, args) => {\n` +
+        `    const identity = await ctx.auth.getUserIdentity();\n` +
+        `    if (!identity) throw new Error("401: not signed in");\n` +
+        `    if (identity.subject !== args.userId) throw new Error("403: forbidden");\n` +
+        `    return null;\n` +
+        `  },\n` +
+        `});\n`,
+    ),
+  );
+  assertAllowedSilent(result);
+});
+
+test("does not advise on internalMutation with a userId arg (internal fns exempt)", () => {
+  const result = runHook(
+    writePayload(
+      "/tmp/proj/convex/users.ts",
+      `import { internalMutation } from "./_generated/server";\n` +
+        `import { v } from "convex/values";\n` +
+        `export const backfillUser = internalMutation({\n` +
+        `  args: { userId: v.id("users") },\n` +
+        `  returns: v.null(),\n` +
+        `  handler: async (ctx, args) => {\n` +
+        `    await ctx.db.patch(args.userId, { migrated: true });\n` +
+        `    return null;\n` +
+        `  },\n` +
+        `});\n`,
+    ),
+  );
+  assertAllowedSilent(result);
+});
+
+test("does not advise on a public mutation with an identity arg typed v.string() (only v.id() is in-scope)", () => {
+  // Deliberately conservative per design: bare v.string() ids are the
+  // broader corpus population (pattern 1 is 25 defects, most of them
+  // v.string()) but out of scope for THIS rule — matching only v.id(...)
+  // keeps the false-positive rate at zero at the cost of narrower recall,
+  // per the same discipline that kept this pattern out of lint entirely in
+  // turn 1.
+  const result = runHook(
+    writePayload(
+      "/tmp/proj/convex/answers.ts",
+      `import { mutation } from "./_generated/server";\n` +
+        `import { v } from "convex/values";\n` +
+        `export const edit = mutation({\n` +
+        `  args: { id: v.string(), editorId: v.string(), body: v.string() },\n` +
+        `  returns: v.null(),\n` +
         `  handler: async (ctx, args) => { return null; },\n` +
         `});\n`,
     ),
   );
   assertAllowedSilent(result);
+});
+
+test("does not advise when ctx.auth appears elsewhere in the file but not this function (still conservative: whole-block scan)", () => {
+  // This rule scans the whole matched function block (args + handler), not
+  // the whole file — a ctx.auth check in a SIBLING function must not
+  // suppress the advisory on a function that has none of its own.
+  const result = runHook(
+    writePayload(
+      "/tmp/proj/convex/appointments.ts",
+      `import { mutation } from "./_generated/server";\n` +
+        `import { v } from "convex/values";\n` +
+        `export const reschedule = mutation({\n` +
+        `  args: { appointmentId: v.id("appointments"), newStart: v.number() },\n` +
+        `  returns: v.null(),\n` +
+        `  handler: async (ctx, args) => {\n` +
+        `    const identity = await ctx.auth.getUserIdentity();\n` +
+        `    if (!identity) throw new Error("401");\n` +
+        `    return null;\n` +
+        `  },\n` +
+        `});\n` +
+        `export const cancel = mutation({\n` +
+        `  args: { appointmentId: v.id("appointments"), actorId: v.id("users") },\n` +
+        `  returns: v.null(),\n` +
+        `  handler: async (ctx, args) => {\n` +
+        `    await ctx.db.patch(args.appointmentId, { status: "cancelled" });\n` +
+        `    return null;\n` +
+        `  },\n` +
+        `});\n`,
+    ),
+  );
+  assertAdvisory(result, "actorId");
 });
 
 // --- fast no-op path (Finding 4) -------------------------------------------

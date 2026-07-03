@@ -31,8 +31,14 @@ Front-loaded, not a post-hoc lint. These are the highest-frequency mistakes and 
 - **Convex functions only run from the `convex/` directory.** Never write `schema.ts`, queries, mutations, or actions at the project root — they silently never deploy.
 - **`httpRouter` has no Express-style `:param` routes.** `http.route({ path: "/api/users/:userId", ... })` only ever matches that literal string — Convex's router is exact-match or `pathPrefix`, never a dynamic segment. Use `pathPrefix: "/api/users/"` and parse the trailing segment yourself: `new URL(request.url).pathname.split("/").pop()`. A model that writes `:id`/`:param` routes ships an app where every parameterized endpoint is dead code — this is one of the most common defects in generated Convex backends.
 - **Every `http.route({...})` `handler:` must be wrapped in `httpAction(...)`** (imported from `./_generated/server`) — a bare `async (ctx, request) => {...}` is not a valid HTTP action even though it type-checks.
+- **Wrap every `v.id(...)`-cast HTTP path/query param in a `try`/`catch`.** Casting a raw URL segment `as any` into a `v.id("table")` arg (`ctx.runQuery(api.foo.bar, { id: rawParam as any })`) throws an uncaught `ArgumentValidationError` on any malformed or wrong-table ID, which surfaces to the caller as an opaque 500 instead of a clean 400/404. Catch it and return a real error response.
+- **A mutating HTTP route with a real-world side effect (payment, ledger post, inventory decrement, order placement) needs an idempotency key.** A client or network retry after a dropped response re-runs the handler and double-applies the effect — accept a client-supplied `requestId`/`idempotencyKey`, check for an existing row with that key first, and short-circuit if found (return the prior result rather than repeating the write).
 - **`ctx.runQuery`/`ctx.runMutation`/`ctx.runAction` take a codegen'd function reference (`api.foo.bar` / `internal.foo.bar`), never the raw imported function.** `import * as queries from "./queries"; ctx.runQuery(queries.getX, ...)` compiles (both shapes are structurally callable) but fails at runtime — it needs `import { api } from "./_generated/api"; ctx.runQuery(api.queries.getX, ...)`.
 - **Never call `ctx.runQuery`/`ctx.runMutation` from inside a `query` handler.** Queries must be pure reads within the same transaction; call the other query's logic directly (extract a shared helper) or move the composition into an action.
+- **`ctx.runQuery`/`ctx.runMutation`/`ctx.runAction` never take a string.** `ctx.runMutation("users:getOrCreateUser", {...})` is not a `FunctionReference` — it type-checks as a string but fails at runtime/deploy. Always `import { api, internal } from "./_generated/api"` and pass `api.users.getOrCreateUser` (or `internal.users.getOrCreateUser`).
+- **There is no `.count()` or `.skip()` on a Convex query builder.** `ctx.db.query(...).withIndex(...).count()` and `.order("desc").skip(n).take(m)` are both hallucinated APIs — the builder only has `collect`/`take`/`first`/`unique`/`paginate`. For a count, `.collect()` and read `.length` (bounded tables) or maintain a running counter field on the parent document (unbounded ones). For an offset page, use cursor-based `.paginate(paginationOpts)`, not `.skip(n)`.
+- **`.take(n)` then filter-in-JS silently drops correct rows, not just perf.** `ctx.db.query(...).take(1000)` followed by an in-memory `.filter(...)`/sort assumes the answer is inside the first `n` rows fetched in *index/creation order* — once the table exceeds `n`, matching rows beyond the cutoff are silently missing from the result (not an error, just quietly wrong: "newest N" becomes "oldest N", a dedupe check against the first N stops catching duplicates, a tag/status filter returns an empty page even though matches exist further down). If you need "all rows matching X," query by an index on X, not by taking N unfiltered rows and filtering client-side afterward.
+- **Every client-controlled numeric/date-range argument needs an upper bound, not just a lower one.** An index range built with only `q.gte(...)` (or an HTTP query-string `limit`/`from`/`to` parsed with a bare `Number(...)`) is unbounded on the open side — a "future reminders" query with no `lte` upper bound reads every row forever forward; an HTTP `limit` param with no `Math.min`/integer check lets `NaN`, `Infinity`, or a negative number reach `.take(...)` and crash or return nonsense. Validate both ends: reject `NaN`/non-finite/negative, clamp to a sane max, and give every index range both a floor and a ceiling.
 
 ## Self-verify — before declaring backend work done
 
@@ -125,6 +131,51 @@ Hitting a limit = redesign, not retry. Paginate (`paginationOptsValidator` + `.p
 
 - `await ctx.auth.getUserIdentity()` in any function that requires login. Returns `null` if unauthenticated — handle both branches.
 - **Check every mutation independently — don't generalize an auth check across a file.** A `ctx.auth`/ownership check present in one mutation does not mean a sibling mutation in the same file is also covered; each public `mutation`/`query` that trusts a client-supplied `userId`/`authorId`/`ownerId` arg without an independent `ctx.auth.getUserIdentity()` call (or a comparison against it) is a separate authz bug, even next to a function that does it right. This is a common false-negative: a model that sees one correct check in a file assumes the pattern applies everywhere and skips it on the next mutation down.
+- **An "operate on this ID" mutation (`cancel`, `edit`, `setStatus`, `accept`) needs an ownership check on the *document*, not just an identity check on the *caller*.** `ctx.auth.getUserIdentity()` proves who's calling; it doesn't prove they're allowed to touch the specific row an `_id` argument points at. `cancelAppointment(appointmentId)`, `editAnswer(answerId, body)`, `setOrderStatus(orderId, status)` must load the doc and compare its owner/author field against the authenticated identity before mutating — otherwise any logged-in user can act on any other user's row just by supplying its id (which is often guessable or visible in a list response).
+- **A query returning another party's private data (PII, order history, revenue, audit logs) by an argument the client supplies is a leak, even if it "looks read-only."** `getUserOrders(userId)`, `getSellerDashboard(shopId)`, `listAuditLogForStaff(staffId)` are exploitable the same way an unauthenticated mutation is: derive the subject from `ctx.auth`, not from the argument, or verify the argument matches the authenticated identity before returning anything.
+- **Copy this pattern instead of re-deriving it per function.** The three rules above (identity-from-arg, missing ownership check, PII-by-argument) are the single largest real-defect cluster measured against generated Convex backends — 44 of 214 confirmed defects in one 30-app corpus. Two small helpers close all three at once:
+
+  ```ts
+  // convex/model/auth.ts
+  import { QueryCtx, MutationCtx } from "../_generated/server";
+
+  /** Throws if unauthenticated. Never trust a client-supplied userId instead. */
+  export async function requireIdentity(ctx: QueryCtx | MutationCtx) {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) throw new Error("401: not signed in");
+    return identity; // identity.subject is the stable per-user id
+  }
+
+  /** Loads `doc` by id and throws unless its owner field matches the caller. */
+  export async function requireOwner<T extends { ownerId: string }>(
+    ctx: QueryCtx | MutationCtx,
+    doc: T | null,
+  ): Promise<T> {
+    if (!doc) throw new Error("404: not found");
+    const identity = await requireIdentity(ctx);
+    if (doc.ownerId !== identity.subject) throw new Error("403: forbidden");
+    return doc;
+  }
+  ```
+
+  ```ts
+  // convex/appointments.ts — the three rules applied together
+  export const cancel = mutation({
+    args: { appointmentId: v.id("appointments") }, // NOT `cancelledBy`/`actorId` from the client
+    returns: v.null(),
+    handler: async (ctx, args) => {
+      const appointment = await ctx.db.get(args.appointmentId);
+      await requireOwner(ctx, appointment); // ownership check on the DOCUMENT, not just "is someone logged in"
+      await ctx.db.patch(args.appointmentId, { status: "cancelled" });
+      return null;
+    },
+  });
+  ```
+
+  The three hard rules this codifies, every time:
+  1. **Identity comes from `ctx.auth`, never from an argument.** A `userId`/`actorId`/`ownerId`/`authorId`/`accountId` field on `args` is a standing invitation to impersonate — if the function needs to know who's calling, call `requireIdentity(ctx)`, don't accept it as a parameter (an internal/admin function that must operate on an arbitrary user is the one legitimate exception — keep it `internalMutation`/`internalQuery`, never public).
+  2. **Every read or mutate keyed by an `_id` argument verifies ownership server-side before touching the row.** Loading the doc and checking `ctx.auth` proves someone is logged in; it doesn't prove they own *this* row. `requireOwner` (or the same comparison inlined) closes that gap for `cancel`/`edit`/`setStatus`/`accept`-shaped mutations and for `get*`/`list*`-shaped queries alike.
+  3. **Never expose a public query that returns PII or financial fields (email, revenue, order/audit history) gated only by a client-supplied id.** Scope every such query through `requireIdentity`/`requireOwner` (or an explicit staff/role check) before it touches rows outside the caller's own scope.
 - Don't roll your own `users`/`sessions`/`accounts` tables. Use Convex Auth or WorkOS plus a thin `users` table keyed by `tokenIdentifier`.
 - **Setting up Convex Auth? `convex/auth.config.ts` is MANDATORY — emit it every time, same turn as `auth.ts`.** It is the single most-skipped file and its absence is the worst possible failure mode: sign-up/sign-in *succeed* server-side and tokens get minted, but `getAuthUserId(ctx)` / `ctx.auth.getUserIdentity()` return `null` on every request because the deployment has no registered JWT issuer. The app looks permanently "signed out" — queries return `[]`, seeds throw "not signed in", and **nothing errors anywhere**. Auth is not wired until this file exists next to `auth.ts`, `http.ts`, and `authTables`:
   ```ts
