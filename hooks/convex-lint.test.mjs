@@ -809,6 +809,161 @@ test("allows the corrected form: .lte(...) chained directly, no .range() wrapper
   assertAllowedSilent(result);
 });
 
+// --- Rule 13: ctx.db.query(...).count() is not a real method (confirmed) --
+
+test("denies .count() chained onto a ctx.db.query(...) builder (kanban/haiku-plugin board.ts:56 repro)", () => {
+  const result = runHook(
+    writePayload(
+      "/tmp/proj/convex/board.ts",
+      `import { query } from "./_generated/server";\n` +
+        `export const getBoard = query({ args: {}, returns: null, handler: async (ctx) => {\n` +
+        `  const commentCount = await ctx.db\n` +
+        `    .query("comments")\n` +
+        `    .withIndex("by_card", (q) => q.eq("cardId", "abc"))\n` +
+        `    .count();\n` +
+        `  return null;\n` +
+        `} });\n`,
+    ),
+  );
+  assertDenied(result, "ctx.db.query .count() is not a method");
+});
+
+test("allows the corrected form: .collect() and .length instead of .count()", () => {
+  const result = runHook(
+    writePayload(
+      "/tmp/proj/convex/board.ts",
+      `import { query } from "./_generated/server";\n` +
+        `export const getBoard = query({ args: {}, returns: null, handler: async (ctx) => {\n` +
+        `  const comments = await ctx.db\n` +
+        `    .query("comments")\n` +
+        `    .withIndex("by_card", (q) => q.eq("cardId", "abc"))\n` +
+        `    .collect();\n` +
+        `  const commentCount = comments.length;\n` +
+        `  return null;\n` +
+        `} });\n`,
+    ),
+  );
+  assertAllowedSilent(result);
+});
+
+// --- Rule 14: ctx.db.query(...).skip() is not a real method (confirmed) ---
+
+test("denies .skip() chained onto a ctx.db.query(...) builder (ledger/haiku accounting.ts:248 repro)", () => {
+  const result = runHook(
+    writePayload(
+      "/tmp/proj/convex/accounting.ts",
+      `import { query } from "./_generated/server";\n` +
+        `export const listJournalEntries = query({ args: {}, returns: null, handler: async (ctx) => {\n` +
+        `  const entries = await ctx.db\n` +
+        `    .query("journalEntries")\n` +
+        `    .withIndex("by_postedAt", (q) => q.gte("postedAt", 0))\n` +
+        `    .order("desc")\n` +
+        `    .skip(0)\n` +
+        `    .take(10)\n` +
+        `    .collect();\n` +
+        `  return null;\n` +
+        `} });\n`,
+    ),
+  );
+  assertDenied(result, "ctx.db.query .skip() is not a method");
+});
+
+test("allows the corrected form: .paginate(paginationOpts) instead of .skip()", () => {
+  const result = runHook(
+    writePayload(
+      "/tmp/proj/convex/accounting.ts",
+      `import { query } from "./_generated/server";\n` +
+        `import { paginationOptsValidator } from "convex/server";\n` +
+        `export const listJournalEntries = query({\n` +
+        `  args: { paginationOpts: paginationOptsValidator },\n` +
+        `  returns: null,\n` +
+        `  handler: async (ctx, args) => {\n` +
+        `    const entries = await ctx.db\n` +
+        `      .query("journalEntries")\n` +
+        `      .withIndex("by_postedAt", (q) => q.gte("postedAt", 0))\n` +
+        `      .order("desc")\n` +
+        `      .paginate(args.paginationOpts);\n` +
+        `    return null;\n` +
+        `  },\n` +
+        `});\n`,
+    ),
+  );
+  assertAllowedSilent(result);
+});
+
+// --- Rule 15: ctx.runQuery/runMutation with a string literal (confirmed) --
+
+test('denies ctx.runMutation("module:fn", ...) string literal (booking/haiku http.ts:22 repro)', () => {
+  const result = runHook(
+    writePayload(
+      "/tmp/proj/convex/http.ts",
+      `import { httpRouter } from "convex/server";\n` +
+        `import { httpAction } from "./_generated/server";\n` +
+        `const http = httpRouter();\n` +
+        `http.route({\n` +
+        `  path: "/users",\n` +
+        `  method: "POST",\n` +
+        `  handler: httpAction(async (ctx, request) => {\n` +
+        `    const body = await request.json();\n` +
+        `    const userId = await ctx.runMutation("users:getOrCreateUser", {\n` +
+        `      email: body.email,\n` +
+        `    });\n` +
+        `    return new Response(JSON.stringify({ id: userId }));\n` +
+        `  }),\n` +
+        `});\n` +
+        `export default http;\n`,
+    ),
+  );
+  assertDenied(result, 'ctx.runMutation with string literal');
+});
+
+test('denies ctx.runMutation("boards:createBoard", ...) string literal (kanban/haiku http.ts:31 repro)', () => {
+  const result = runHook(
+    writePayload(
+      "/tmp/proj/convex/http.ts",
+      `import { httpRouter } from "convex/server";\n` +
+        `import { httpAction } from "./_generated/server";\n` +
+        `const http = httpRouter();\n` +
+        `http.route({\n` +
+        `  path: "/boards",\n` +
+        `  method: "POST",\n` +
+        `  handler: httpAction(async (ctx, request) => {\n` +
+        `    const body = await request.json();\n` +
+        `    const boardId = await ctx.runMutation("boards:createBoard", body);\n` +
+        `    return new Response(JSON.stringify({ id: boardId }));\n` +
+        `  }),\n` +
+        `});\n` +
+        `export default http;\n`,
+    ),
+  );
+  assertDenied(result, 'ctx.runMutation with string literal');
+});
+
+test("allows the corrected form: api.* function reference instead of a string", () => {
+  const result = runHook(
+    writePayload(
+      "/tmp/proj/convex/http.ts",
+      `import { httpRouter } from "convex/server";\n` +
+        `import { httpAction } from "./_generated/server";\n` +
+        `import { api } from "./_generated/api";\n` +
+        `const http = httpRouter();\n` +
+        `http.route({\n` +
+        `  path: "/users",\n` +
+        `  method: "POST",\n` +
+        `  handler: httpAction(async (ctx, request) => {\n` +
+        `    const body = await request.json();\n` +
+        `    const userId = await ctx.runMutation(api.users.getOrCreateUser, {\n` +
+        `      email: body.email,\n` +
+        `    });\n` +
+        `    return new Response(JSON.stringify({ id: userId }));\n` +
+        `  }),\n` +
+        `});\n` +
+        `export default http;\n`,
+    ),
+  );
+  assertAllowedSilent(result);
+});
+
 // --- Advisory: ctx.runQuery/runMutation with a module ref, not api/internal
 
 test("advises on ctx.runQuery(queries.getX, ...) module-ref (forum/haiku-plugin http.ts:2,27 repro)", () => {
@@ -847,6 +1002,58 @@ test("does not advise when ctx.runQuery uses api.* (corrected form)", () => {
         `  handler: httpAction(async (ctx, request) => {\n` +
         `    const result = await ctx.runQuery(api.queries.getQuestions, {});\n` +
         `    return new Response(JSON.stringify(result));\n` +
+        `  }),\n` +
+        `});\n` +
+        `export default http;\n`,
+    ),
+  );
+  assertAllowedSilent(result);
+});
+
+// --- Advisory: ctx.runQuery/runMutation with a direct named-import ref ----
+
+test("advises on ctx.runMutation(createAccount, ...) named-import ref (ledger/haiku http.ts:26,32 repro)", () => {
+  const result = runHook(
+    writePayload(
+      "/tmp/proj/convex/http.ts",
+      `import { httpRouter } from "convex/server";\n` +
+        `import { httpAction } from "./_generated/server";\n` +
+        `import { createAccount } from "./accounting";\n` +
+        `const http = httpRouter();\n` +
+        `http.route({\n` +
+        `  path: "/accounts",\n` +
+        `  method: "POST",\n` +
+        `  handler: httpAction(async (ctx, request) => {\n` +
+        `    const body = await request.json();\n` +
+        `    const result = await ctx.runMutation(createAccount, {\n` +
+        `      name: body.name,\n` +
+        `    });\n` +
+        `    return new Response(JSON.stringify({ accountId: result }));\n` +
+        `  }),\n` +
+        `});\n` +
+        `export default http;\n`,
+    ),
+  );
+  assertAdvisory(result, "the raw exported function, not a Convex function");
+});
+
+test("does not advise when ctx.runMutation uses api.* (corrected form, named-import case)", () => {
+  const result = runHook(
+    writePayload(
+      "/tmp/proj/convex/http.ts",
+      `import { httpRouter } from "convex/server";\n` +
+        `import { httpAction } from "./_generated/server";\n` +
+        `import { api } from "./_generated/api";\n` +
+        `const http = httpRouter();\n` +
+        `http.route({\n` +
+        `  path: "/accounts",\n` +
+        `  method: "POST",\n` +
+        `  handler: httpAction(async (ctx, request) => {\n` +
+        `    const body = await request.json();\n` +
+        `    const result = await ctx.runMutation(api.accounting.createAccount, {\n` +
+        `      name: body.name,\n` +
+        `    });\n` +
+        `    return new Response(JSON.stringify({ accountId: result }));\n` +
         `  }),\n` +
         `});\n` +
         `export default http;\n`,
