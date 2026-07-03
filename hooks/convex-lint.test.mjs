@@ -588,11 +588,12 @@ test("allows Web Crypto via globalThis.crypto with no import", () => {
     writePayload(
       "/tmp/proj/convex/http.ts",
       `import { httpRouter } from "convex/server";\n` +
+        `import { httpAction } from "./_generated/server";\n` +
         `const http = httpRouter();\n` +
-        `http.route({ path: "/health", method: "GET", handler: async () => {\n` +
+        `http.route({ path: "/health", method: "GET", handler: httpAction(async () => {\n` +
         `  const id = crypto.randomUUID();\n` +
         `  return new Response(id);\n` +
-        `} });\n` +
+        `}) });\n` +
         `export default http;\n`,
     ),
   );
@@ -623,6 +624,281 @@ test("still denies old positional function syntax", () => {
     ),
   );
   assertDenied(result, "old positional function syntax");
+});
+
+// --- Rule 10: httpRouter :param route (defect-review sample, confirmed) ---
+
+test("denies http.route path with :param segment (forum/haiku http.ts:33 repro)", () => {
+  const result = runHook(
+    writePayload(
+      "/tmp/proj/convex/http.ts",
+      `import { httpRouter } from "convex/server";\n` +
+        `import { httpAction } from "./_generated/server";\n` +
+        `const http = httpRouter();\n` +
+        `http.route({\n` +
+        `  path: "/api/users/:userId",\n` +
+        `  method: "GET",\n` +
+        `  handler: httpAction(async (ctx, request) => {\n` +
+        `    return new Response("ok");\n` +
+        `  }),\n` +
+        `});\n` +
+        `export default http;\n`,
+    ),
+  );
+  assertDenied(result, "httpRouter :param route");
+});
+
+test("denies http.route path with :param segment (warehouse/haiku http.ts:56 repro, /items/:id)", () => {
+  const result = runHook(
+    writePayload(
+      "/tmp/proj/convex/http.ts",
+      `import { httpRouter } from "convex/server";\n` +
+        `import { httpAction } from "./_generated/server";\n` +
+        `const http = httpRouter();\n` +
+        `http.route({\n` +
+        `  path: "/items/:id",\n` +
+        `  method: "GET",\n` +
+        `  handler: httpAction(async (ctx, request) => {\n` +
+        `    return new Response("ok");\n` +
+        `  }),\n` +
+        `});\n` +
+        `export default http;\n`,
+    ),
+  );
+  assertDenied(result, "httpRouter :param route");
+});
+
+test("allows the corrected form: pathPrefix + parse the trailing segment", () => {
+  const result = runHook(
+    writePayload(
+      "/tmp/proj/convex/http.ts",
+      `import { httpRouter } from "convex/server";\n` +
+        `import { httpAction } from "./_generated/server";\n` +
+        `const http = httpRouter();\n` +
+        `http.route({\n` +
+        `  pathPrefix: "/api/users/",\n` +
+        `  method: "GET",\n` +
+        `  handler: httpAction(async (ctx, request) => {\n` +
+        `    const id = new URL(request.url).pathname.split("/").pop();\n` +
+        `    return new Response(id ?? "");\n` +
+        `  }),\n` +
+        `});\n` +
+        `export default http;\n`,
+    ),
+  );
+  assertAllowedSilent(result);
+});
+
+test("does not flag a plain http.route path with no colon segment", () => {
+  const result = runHook(
+    writePayload(
+      "/tmp/proj/convex/http.ts",
+      `import { httpRouter } from "convex/server";\n` +
+        `import { httpAction } from "./_generated/server";\n` +
+        `const http = httpRouter();\n` +
+        `http.route({\n` +
+        `  path: "/api/users",\n` +
+        `  method: "POST",\n` +
+        `  handler: httpAction(async (ctx, request) => {\n` +
+        `    return new Response("ok");\n` +
+        `  }),\n` +
+        `});\n` +
+        `export default http;\n`,
+    ),
+  );
+  assertAllowedSilent(result);
+});
+
+// --- Rule 11: http.route handler not wrapped in httpAction (confirmed) ----
+
+test("denies a bare arrow-function handler in http.route (forum/haiku-plugin http.ts:10 repro)", () => {
+  const result = runHook(
+    writePayload(
+      "/tmp/proj/convex/http.ts",
+      `import { httpRouter } from "convex/server";\n` +
+        `const http = httpRouter();\n` +
+        `http.route({\n` +
+        `  path: "/health",\n` +
+        `  method: "GET",\n` +
+        `  handler: async () => {\n` +
+        `    return new Response(JSON.stringify({ ok: true }));\n` +
+        `  },\n` +
+        `});\n` +
+        `export default http;\n`,
+    ),
+  );
+  assertDenied(result, "http.route handler not wrapped in httpAction");
+});
+
+test("denies a bare async handler with (ctx, request) params (warehouse/haiku http.ts:14 repro)", () => {
+  const result = runHook(
+    writePayload(
+      "/tmp/proj/convex/http.ts",
+      `import { httpRouter } from "convex/server";\n` +
+        `const http = httpRouter();\n` +
+        `http.route({\n` +
+        `  path: "/items",\n` +
+        `  method: "GET",\n` +
+        `  handler: async (ctx, request) => {\n` +
+        `    return new Response("[]");\n` +
+        `  },\n` +
+        `});\n` +
+        `export default http;\n`,
+    ),
+  );
+  assertDenied(result, "http.route handler not wrapped in httpAction");
+});
+
+test("allows the corrected form: handler wrapped in httpAction(...)", () => {
+  const result = runHook(
+    writePayload(
+      "/tmp/proj/convex/http.ts",
+      `import { httpRouter } from "convex/server";\n` +
+        `import { httpAction } from "./_generated/server";\n` +
+        `const http = httpRouter();\n` +
+        `http.route({\n` +
+        `  path: "/health",\n` +
+        `  method: "GET",\n` +
+        `  handler: httpAction(async () => {\n` +
+        `    return new Response(JSON.stringify({ ok: true }));\n` +
+        `  }),\n` +
+        `});\n` +
+        `export default http;\n`,
+    ),
+  );
+  assertAllowedSilent(result);
+});
+
+// --- Rule 12: withIndex .range() is not a real method (confirmed) ---------
+
+test("denies .range() chained inside a withIndex callback (warehouse/haiku dashboard.ts:10 repro)", () => {
+  const result = runHook(
+    writePayload(
+      "/tmp/proj/convex/dashboard.ts",
+      `import { query } from "./_generated/server";\n` +
+        `export const getDashboard = query({ args: {}, returns: null, handler: async (ctx) => {\n` +
+        `  const alerts = await ctx.db\n` +
+        `    .query("lowStockAlerts")\n` +
+        `    .withIndex("by_unacknowledged", (q) =>\n` +
+        `      q.eq("acknowledged", false).range((r) => r.lte("alertedAt", Date.now()))\n` +
+        `    )\n` +
+        `    .collect();\n` +
+        `  return null;\n` +
+        `} });\n`,
+    ),
+  );
+  assertDenied(result, "withIndex .range() is not a method");
+});
+
+test("allows the corrected form: .lte(...) chained directly, no .range() wrapper", () => {
+  const result = runHook(
+    writePayload(
+      "/tmp/proj/convex/dashboard.ts",
+      `import { query } from "./_generated/server";\n` +
+        `export const getDashboard = query({ args: {}, returns: null, handler: async (ctx) => {\n` +
+        `  const alerts = await ctx.db\n` +
+        `    .query("lowStockAlerts")\n` +
+        `    .withIndex("by_unacknowledged", (q) =>\n` +
+        `      q.eq("acknowledged", false).lte("alertedAt", Date.now())\n` +
+        `    )\n` +
+        `    .take(50);\n` +
+        `  return null;\n` +
+        `} });\n`,
+    ),
+  );
+  assertAllowedSilent(result);
+});
+
+// --- Advisory: ctx.runQuery/runMutation with a module ref, not api/internal
+
+test("advises on ctx.runQuery(queries.getX, ...) module-ref (forum/haiku-plugin http.ts:2,27 repro)", () => {
+  const result = runHook(
+    writePayload(
+      "/tmp/proj/convex/http.ts",
+      `import { httpRouter } from "convex/server";\n` +
+        `import { httpAction } from "./_generated/server";\n` +
+        `import * as queries from "./queries";\n` +
+        `const http = httpRouter();\n` +
+        `http.route({\n` +
+        `  path: "/questions",\n` +
+        `  method: "GET",\n` +
+        `  handler: httpAction(async (ctx, request) => {\n` +
+        `    const result = await ctx.runQuery(queries.getQuestions, {});\n` +
+        `    return new Response(JSON.stringify(result));\n` +
+        `  }),\n` +
+        `});\n` +
+        `export default http;\n`,
+    ),
+  );
+  assertAdvisory(result, "is the raw exported function, not a Convex function");
+});
+
+test("does not advise when ctx.runQuery uses api.* (corrected form)", () => {
+  const result = runHook(
+    writePayload(
+      "/tmp/proj/convex/http.ts",
+      `import { httpRouter } from "convex/server";\n` +
+        `import { httpAction } from "./_generated/server";\n` +
+        `import { api } from "./_generated/api";\n` +
+        `const http = httpRouter();\n` +
+        `http.route({\n` +
+        `  path: "/questions",\n` +
+        `  method: "GET",\n` +
+        `  handler: httpAction(async (ctx, request) => {\n` +
+        `    const result = await ctx.runQuery(api.queries.getQuestions, {});\n` +
+        `    return new Response(JSON.stringify(result));\n` +
+        `  }),\n` +
+        `});\n` +
+        `export default http;\n`,
+    ),
+  );
+  assertAllowedSilent(result);
+});
+
+// --- Advisory: unbounded numeric delta (vote/score/qty), confirmed --------
+
+test("advises on unchecked v.number() vote value (forum/haiku votes.ts:30 repro)", () => {
+  const result = runHook(
+    writePayload(
+      "/tmp/proj/convex/votes.ts",
+      `import { mutation } from "./_generated/server";\n` +
+        `import { v } from "convex/values";\n` +
+        `export const voteOnQuestion = mutation({\n` +
+        `  args: {\n` +
+        `    userId: v.id("users"),\n` +
+        `    questionId: v.id("questions"),\n` +
+        `    value: v.number(),\n` +
+        `  },\n` +
+        `  returns: v.null(),\n` +
+        `  handler: async (ctx, args) => {\n` +
+        `    const question = await ctx.db.get(args.questionId);\n` +
+        `    const scoreDelta = args.value;\n` +
+        `    return null;\n` +
+        `  },\n` +
+        `});\n`,
+    ),
+  );
+  assertAdvisory(result, "has no visible bound");
+});
+
+test("does not advise when the vote value is bounded with v.union(v.literal(...))", () => {
+  const result = runHook(
+    writePayload(
+      "/tmp/proj/convex/votes.ts",
+      `import { mutation } from "./_generated/server";\n` +
+        `import { v } from "convex/values";\n` +
+        `export const voteOnQuestion = mutation({\n` +
+        `  args: {\n` +
+        `    userId: v.id("users"),\n` +
+        `    questionId: v.id("questions"),\n` +
+        `    value: v.union(v.literal(1), v.literal(-1)),\n` +
+        `  },\n` +
+        `  returns: v.null(),\n` +
+        `  handler: async (ctx, args) => { return null; },\n` +
+        `});\n`,
+    ),
+  );
+  assertAllowedSilent(result);
 });
 
 // --- fast no-op path (Finding 4) -------------------------------------------

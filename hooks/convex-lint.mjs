@@ -61,6 +61,21 @@
 //        non-`"use node"` file in convex/ (queries, mutations, http routers,
 //        schema, etc.) runs in that isolate, so this is unambiguous
 //        regardless of what the file defines.
+//     10. `path: "/…/:param"` inside an `http.route({...})` call — Convex's
+//        `httpRouter` has no Express-style dynamic-segment syntax, only exact
+//        match or `pathPrefix`. A `:param` route is permanently dead code,
+//        matching only its own literal string. Confirmed real defect from
+//        the defect-review sample (forum/haiku `http.ts:33`, warehouse/haiku
+//        `http.ts:56` — every parameterized route in both files unreachable).
+//     11. `handler:` inside an `http.route({...})` call that isn't wrapped in
+//        `httpAction(...)` — a bare `async (ctx, request) => {...}` compiles
+//        but isn't a valid Convex HTTP action. Confirmed real defect (forum/
+//        haiku-plugin `http.ts:10`, warehouse/haiku `http.ts:14`).
+//     12. `.range(...)` chained inside a `withIndex(...)` index-range builder
+//        callback — not a real method on Convex's `IndexRangeBuilder` (only
+//        `eq`/`gt`/`gte`/`lt`/`lte` exist, chained directly; verified against
+//        the package's `.d.ts`). Confirmed real defect (warehouse/haiku
+//        `dashboard.ts:10`).
 // - `app.use(X)` in `convex.config.ts` where `X`'s import comes from a
 //   relative path (e.g. `./http`) is an ADVISORY, not a deny — legitimate
 //   components are mounted via a package's `convex.config` subpath
@@ -68,8 +83,14 @@
 //   same-file relative import isn't unambiguously wrong (could be a local
 //   sub-app in rare setups), so this stays soft per the deny discipline below.
 // - Everything else (missing `args:` / `returns:` on a function object, an
-//   unbounded `.collect()`) is a soft advisory delivered via
-//   `additionalContext` on an "allow" decision.
+//   unbounded `.collect()`, `ctx.runQuery`/`runMutation`/`runAction` called
+//   with a bare module-namespace reference instead of `api.*`/`internal.*`
+//   (confirmed defect: forum/haiku-plugin `http.ts:2,27`), and a numeric
+//   `args` field named like a score/vote/qty delta with no visible bound
+//   (confirmed defect: forum/haiku `votes.ts:30`, warehouse/opus-plugin
+//   `stock.ts:20`)) is a soft advisory delivered via `additionalContext` on
+//   an "allow" decision — each of these needs more context than a regex can
+//   safely turn into a hard deny without false-positive risk.
 // - Edge discipline: a hard-deny false positive is the worst outcome. When in
 //   doubt, allow; any internal error → exit 0 silent (try/catch everywhere).
 
@@ -542,6 +563,107 @@ try {
     }
   }
 
+  // Rule 10: an `httpRouter` route `path:` containing an Express-style
+  // `:param` dynamic segment (e.g. `path: "/api/users/:userId"`). Convex's
+  // `httpRouter` only supports exact-string match or `pathPrefix` — it has no
+  // colon-param syntax, so a route registered this way only ever matches the
+  // literal path string `/api/users/:userId` and is permanently dead code
+  // (confirmed real defect from the defect-review sample: forum/haiku's
+  // `http.ts:33` `/api/users/:userId`, `/api/questions/:questionId`, plus 6
+  // more routes in the same file; warehouse/haiku's `http.ts:56`
+  // `/items/:id`). Unambiguous: a `path:` string literal inside an
+  // `http.route({...})` call containing a `/:` segment can never be a valid
+  // dynamic Convex route regardless of file contents around it.
+  const httpParamRouteRe =
+    /\bpath\s*:\s*(["'`])((?:(?!\1).)*\/:[A-Za-z_][A-Za-z0-9_]*(?:(?!\1).)*)\1/g;
+  let httpParamMatch;
+  while ((httpParamMatch = httpParamRouteRe.exec(projected)) !== null) {
+    const routePath = httpParamMatch[2];
+    track("http_router_param_route", "deny");
+    deny(
+      `convex-lint rule "httpRouter :param route": this write contains ` +
+        `\`${snippet(httpParamMatch[0])}\` — Convex's \`httpRouter\` does ` +
+        `NOT support Express-style \`:param\` path segments. A route ` +
+        `registered as \`path: "${routePath}"\` only ever matches that ` +
+        `literal string — it never matches a real dynamic value, so the ` +
+        `route is permanently unreachable dead code. Fix: use ` +
+        `\`pathPrefix\` and parse the trailing segment yourself, e.g. ` +
+        `\`http.route({ pathPrefix: "${routePath.split("/:")[0]}/", method: ` +
+        `"GET", handler: httpAction(async (ctx, request) => { const id = ` +
+        `new URL(request.url).pathname.split("/").pop(); ... }) })\`.`,
+    );
+  }
+
+  // Rule 11: an `http.route({...})` call whose `handler:` is a bare
+  // function (`async (ctx...) => {...}` or `async function(...)  {...}`)
+  // instead of being wrapped in `httpAction(...)`. Confirmed real defect
+  // (forum/haiku-plugin `http.ts:10`, warehouse/haiku `http.ts:14`) — an
+  // unwrapped handler doesn't get Convex's `httpAction` request/response
+  // plumbing and fails to deploy as a valid HTTP action. Scoped to the
+  // `handler:` key immediately inside an `http.route({` call: walk forward
+  // from each `http.route({` to its matching `handler:` and check whether
+  // `httpAction(` appears before the handler's arrow/function keyword.
+  const httpRouteBlockRe = /\bhttp\.route\(\s*\{/g;
+  let httpRouteBlockMatch;
+  while ((httpRouteBlockMatch = httpRouteBlockRe.exec(projected)) !== null) {
+    const blockStart = httpRouteBlockMatch.index;
+    const blockSlice = projected.slice(blockStart, blockStart + 400);
+    const handlerMatch = /\bhandler\s*:\s*(httpAction\s*\(|async\s*(?:\([^)]*\)|\w+)\s*=>|async\s+function\b|function\b)/.exec(
+      blockSlice,
+    );
+    if (handlerMatch && !/^httpAction\s*\(/.test(handlerMatch[1])) {
+      track("http_route_handler_not_wrapped", "deny");
+      deny(
+        `convex-lint rule "http.route handler not wrapped in httpAction": ` +
+          `this write contains \`${snippet(handlerMatch[0])}\` inside an ` +
+          `\`http.route({...})\` call — the \`handler:\` of an HTTP route ` +
+          `must be wrapped in \`httpAction(...)\` (imported from ` +
+          `\`./_generated/server\`), e.g. \`handler: httpAction(async ` +
+          `(ctx, request) => { ... return new Response(...); })\`. A bare ` +
+          `\`async (ctx, request) => {...}\` without the \`httpAction(...)\` ` +
+          `wrapper is not a valid HTTP action.`,
+      );
+    }
+  }
+
+  // Rule 12: `.range(` chained as a method call inside a `withIndex(...)`
+  // index-range builder callback (e.g. `q.eq("acknowledged", false).range((r)
+  // => r.lte("alertedAt", Date.now()))`). Confirmed real defect (warehouse/
+  // haiku `dashboard.ts:10`) and verified against the `convex` package's
+  // `IndexRangeBuilder` type: the only methods on that builder are `eq`,
+  // `gt`, `gte`, `lt`, `lte`, chained directly on the callback param — there
+  // is no `.range(...)` method anywhere in the chain, and calling one method
+  // (e.g. `.eq(...)`) returns a terminal `IndexRange` with no further
+  // methods, so `.range(` after it is always a type error / hallucinated
+  // API, never a real pattern. Scoped to inside a `withIndex(` callback so a
+  // same-named `.range(` on an unrelated object elsewhere can't false-positive.
+  const withIndexBlockRe = /\.withIndex\(\s*(["'`])(?:(?!\1).)*\1\s*,\s*\(?\s*(\w+)\s*\)?\s*=>/g;
+  let withIndexMatch;
+  while ((withIndexMatch = withIndexBlockRe.exec(projected)) !== null) {
+    const param = withIndexMatch[2];
+    const bodyStart = withIndexMatch.index + withIndexMatch[0].length;
+    const bodySlice = projected.slice(bodyStart, bodyStart + 300);
+    // Trim at the callback's likely end (matching close paren for withIndex
+    // is hard with regex; a generous slice + terminator scan is enough since
+    // we only need to detect the discriminator token, not fully parse it).
+    const terminatorMatch = /\n\s*\)\s*\.|\n\s*\)\s*;|\n\s*\}\s*\)/.exec(bodySlice);
+    const body = terminatorMatch ? bodySlice.slice(0, terminatorMatch.index) : bodySlice;
+    const rangeCallRe = new RegExp(`\\b${param}\\.[a-zA-Z]+\\([^)]*\\)\\.range\\(`);
+    const rangeMatch = rangeCallRe.exec(body) || /\)\.range\(/.exec(body);
+    if (rangeMatch) {
+      track("withindex_range_method", "deny");
+      deny(
+        `convex-lint rule "withIndex .range() is not a method": this write ` +
+          `contains \`${snippet(rangeMatch[0])}\` inside a \`.withIndex(...)\` ` +
+          `callback — \`.range(...)\` is not a method on Convex's ` +
+          `\`IndexRangeBuilder\`. The only methods are \`eq\`, \`gt\`, ` +
+          `\`gte\`, \`lt\`, \`lte\`, chained directly on the callback param, ` +
+          `e.g. \`q.eq("acknowledged", false).lte("alertedAt", Date.now())\` ` +
+          `— no \`.range(...)\` wrapper and no nested callback.`,
+      );
+    }
+  }
+
   // --- SOFT WARNINGS (never deny) ----------------------------------------
   // Heuristic: each `query({`-style block whose first ~300 chars contain no
   // `args:` / `returns:` gets one advisory line.
@@ -648,6 +770,92 @@ try {
         }
       }
     }
+  }
+
+  // Advisory (http.ts only): `ctx.runQuery(...)` / `ctx.runMutation(...)` /
+  // `ctx.runAction(...)` whose first argument is a bare module-namespace
+  // reference (`import * as queries from "./queries"; ...
+  // ctx.runQuery(queries.getX, ...)`) instead of an `api.*`/`internal.*`
+  // function reference. Confirmed real defect (forum/haiku-plugin
+  // `http.ts:2`/`:27` — `ctx.runQuery(queries.getQuestions, ...)`); Convex's
+  // `ctx.runQuery`/`ctx.runMutation`/`ctx.runAction` require a
+  // `FunctionReference` produced by codegen (`api.foo.bar` /
+  // `internal.foo.bar`), not the raw exported function value — passing the
+  // function itself compiles (both are callables to TS's structural typing)
+  // but fails at runtime with a "not a function reference" error. This is
+  // advisory rather than a hard deny because the module-alias name is
+  // project-specific (`queries`/`mutations`/anything) and a regex can't fully
+  // rule out a same-shaped false positive, so it stays a warning per this
+  // hook's "hard-deny only when unambiguous" discipline.
+  const isHttpFile = /(^|\/)http\.ts$/.test(normalized);
+  if (isHttpFile) {
+    const namespaceImports = new Set();
+    const namespaceImportRe = /import\s+\*\s+as\s+(\w+)\s+from\s*["'](\.\/[^"']*)["']/g;
+    let nsMatch;
+    while ((nsMatch = namespaceImportRe.exec(projected)) !== null) {
+      // Skip the real generated namespaces, if a project ever names an alias
+      // this way — api/internal themselves are fine.
+      if (nsMatch[1] !== "api" && nsMatch[1] !== "internal") {
+        namespaceImports.add(nsMatch[1]);
+      }
+    }
+    if (namespaceImports.size > 0) {
+      const runCallRe = /\bctx\.(runQuery|runMutation|runAction)\(\s*(\w+)\.(\w+)/g;
+      let runCallMatch;
+      while ((runCallMatch = runCallRe.exec(projected)) !== null) {
+        const [full, runFn, ns, member] = runCallMatch;
+        if (namespaceImports.has(ns)) {
+          if (firstWarningRule === null) firstWarningRule = "run_call_module_ref";
+          warnings.push(
+            `convex-lint: \`ctx.${runFn}(${ns}.${member}, ...)\` in ` +
+              `\`${filePath}\` — \`${ns}\` was imported as ` +
+              `\`import * as ${ns} from "./${ns}"\`, so \`${ns}.${member}\` ` +
+              `is the raw exported function, not a Convex function ` +
+              `reference. \`ctx.${runFn}\` needs \`api.${ns}.${member}\` or ` +
+              `\`internal.${ns}.${member}\` (imported from ` +
+              `\`./_generated/api\`) — this fails at runtime even though it ` +
+              `typechecks.`,
+          );
+        }
+      }
+    }
+  }
+
+  // Advisory: a numeric mutation arg (`v.number()`, no literal/union bound)
+  // used directly as a score/balance/quantity delta — i.e. added to or
+  // assigned onto a field read via `ctx.db.get`/an existing doc, with no
+  // visible range check (`Math.abs`, a comparison against a fixed set, an
+  // `if (... < 0 ...)` throw) between the arg declaration and its use.
+  // Confirmed real defect shape (forum/haiku `votes.ts:30` — `value:
+  // v.number()` used unchecked as `scoreDelta`, letting a client inflate a
+  // question's score arbitrarily; warehouse/opus-plugin `stock.ts:20` — NaN/
+  // Infinity qty passing guards). This is intentionally advisory, not a hard
+  // deny: "is this arg later used as an unchecked delta" requires tracing
+  // data flow across the handler body, which a regex can only approximate —
+  // false positives are likely on legitimately-unbounded numeric fields
+  // (timestamps, free-form counts). Narrow heuristic: an `args` field typed
+  // exactly `v.number()` whose name matches a delta/score/vote/quantity
+  // shape, with no `v.union(v.literal(` anywhere in the same `args: {...}`
+  // block.
+  const deltaFieldNameRe = /\b(value|delta|score|vote|qty|quantity|amount)\s*:\s*v\.number\(\)/g;
+  let deltaFieldMatch;
+  while ((deltaFieldMatch = deltaFieldNameRe.exec(projected)) !== null) {
+    const fieldName = deltaFieldMatch[1];
+    const argsBlockStart = Math.max(0, deltaFieldMatch.index - 300);
+    const argsBlockSlice = projected.slice(argsBlockStart, deltaFieldMatch.index + 200);
+    if (/v\.union\(\s*v\.literal\(/.test(argsBlockSlice)) continue; // already bounded nearby
+    if (firstWarningRule === null) firstWarningRule = "unbounded_numeric_delta";
+    warnings.push(
+      `convex-lint: \`${fieldName}: v.number()\` in \`${filePath}\` has no ` +
+        `visible bound — if this value is later added to or assigned onto ` +
+        `an existing field (a score, balance, or quantity delta), an ` +
+        `unchecked \`v.number()\` lets a client send an arbitrarily large ` +
+        `or negative value and corrupt that field. If the value is one of a ` +
+        `fixed set (e.g. a vote of \`+1\`/\`-1\`), use ` +
+        `\`v.union(v.literal(1), v.literal(-1))\` instead; if it's a free ` +
+        `magnitude, validate the range explicitly in the handler (reject ` +
+        `\`NaN\`, \`Infinity\`, and out-of-bounds values) before using it.`,
+    );
   }
 
   if (warnings.length > 0) {
