@@ -101,12 +101,21 @@
 //   (confirmed defect: forum/haiku-plugin `http.ts:2,27`), the sibling shape
 //   where a *named* (non-namespace) import is passed directly instead of an
 //   `api.*`/`internal.*` reference (confirmed defect: ledger/haiku
-//   `http.ts:26,32` — `ctx.runMutation(createAccount, ...)`), and a numeric
+//   `http.ts:26,32` — `ctx.runMutation(createAccount, ...)`), a numeric
 //   `args` field named like a score/vote/qty delta with no visible bound
 //   (confirmed defect: forum/haiku `votes.ts:30`, warehouse/opus-plugin
-//   `stock.ts:20`)) is a soft advisory delivered via `additionalContext` on
-//   an "allow" decision — each of these needs more context than a regex can
-//   safely turn into a hard deny without false-positive risk.
+//   `stock.ts:20`), and a public `query`/`mutation` whose `args` declare an
+//   identity-shaped `v.id(...)` field (`userId`/`actorId`/`ownerId`/
+//   `authorId`/`accountId`) with zero `ctx.auth` reference anywhere in the
+//   function body (the mechanically-detectable slice of the corpus's #1
+//   real-defect cluster — "trusts client userId, no ctx.auth", 25 of 214
+//   confirmed defects; confirmed repros: forum/haiku-plugin `votes.ts`
+//   `cast`/`voteOnQuestion`, shop/haiku-plugin `orders.ts` `checkout`,
+//   booking `bookings.ts`/`appointments.ts` `cancel`) is a soft advisory
+//   delivered via `additionalContext` on an "allow" decision — each of these
+//   needs more context than a regex can safely turn into a hard deny without
+//   false-positive risk (an internal/admin tool or trusted server-to-server
+//   call can legitimately take a userId arg with no ctx.auth in sight).
 // - Edge discipline: a hard-deny false positive is the worst outcome. When in
 //   doubt, allow; any internal error → exit 0 silent (try/catch everywhere).
 
@@ -215,6 +224,30 @@ function readStdin() {
 function snippet(text) {
   const oneLine = String(text).replace(/\s+/g, " ").trim();
   return oneLine.length > 120 ? `${oneLine.slice(0, 120)}…` : oneLine;
+}
+
+// Given the index of an opening `(` (or `{`), return the index just past its
+// matching close, by counting all three bracket kinds so a `{`/`(`/`[` inside
+// a string/template literal or comment doesn't desync the count for the
+// common cases (validators, object literals) this hook actually scans. Not a
+// full parser — good enough to bound a function-call block (e.g. the whole
+// `query({ ... })` call) whose length varies too much for a fixed-size slice,
+// which the pre-existing fixed-slice rules (12/13/14, the delta-field
+// advisory) rely on for shorter chains. Returns `text.length` if unbalanced
+// (never throws), so a caller can always safely `.slice(start, end)`.
+function findMatchingClose(text, openIndex) {
+  const opener = text[openIndex];
+  const closer = opener === "(" ? ")" : opener === "{" ? "}" : "]";
+  let depth = 0;
+  for (let i = openIndex; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === "(" || ch === "{" || ch === "[") depth++;
+    else if (ch === ")" || ch === "}" || ch === "]") {
+      depth--;
+      if (depth === 0) return i + 1;
+    }
+  }
+  return text.length;
 }
 
 try {
@@ -1021,6 +1054,77 @@ try {
         `\`v.union(v.literal(1), v.literal(-1))\` instead; if it's a free ` +
         `magnitude, validate the range explicitly in the handler (reject ` +
         `\`NaN\`, \`Infinity\`, and out-of-bounds values) before using it.`,
+    );
+  }
+
+  // Advisory: a public `query`/`mutation` whose `args` declare an identity-
+  // shaped field (`userId`/`actorId`/`ownerId`/`authorId`/`accountId`, typed
+  // `v.id(...)`) while the handler body never references `ctx.auth` at all.
+  // This is the mechanically-detectable slice of the corpus's single largest
+  // real-defect cluster — "trusts client userId, no ctx.auth" (25 of 214
+  // confirmed defects, `FLYWHEEL.md` turn 1, pattern 1) — narrowed down to
+  // only the shape a regex can flag without guessing at data flow. Real
+  // repros matching this exact shape: `votes.ts` (`cast({ userId: v.id(...),
+  // ... })`, forum/haiku `voteOnQuestion`), `bookings.ts`/`appointments.ts`
+  // (`cancel`/`setStatus` taking a caller-supplied actor id), `orders.ts`
+  // (`checkout({ buyerId: v.id(...), ... })`, shop/haiku-plugin), `queries.ts`
+  // (`getUserOrders({ userId: v.id(...) })` — same pattern on the read side).
+  // Deliberately conservative, matching turn 1's own reasoning for why this
+  // pattern was NOT shipped as lint then (see FLYWHEEL.md: "false-positive
+  // risk is too high for one regex to arbitrate 'is this argument used for
+  // authz'") — this rule ships only the strict subset turn 1 explicitly
+  // called out as too risky to guess at, by requiring BOTH: (a) the
+  // fixed-shape identity field name, typed `v.id(...)` (not a bare
+  // `v.string()` — narrower than the corpus's full pattern-1 population, but
+  // zero ambiguity about "is this an id"), AND (b) literally zero `ctx.auth`
+  // anywhere in the block (not "is ctx.auth used correctly," just "is it used
+  // at all" — a function that has no auth check whatsoever cannot be
+  // deriving identity from it). It is ADVISORY ONLY, never a deny: an
+  // internal/admin tool, a seed script, or a trusted server-to-server call
+  // legitimately takes a `userId` argument with no `ctx.auth` in sight, and
+  // this hook's own discipline is "when in doubt, allow." Scoped to the
+  // public `query(`/`mutation(` object-call form only — `internalQuery`/
+  // `internalMutation`/`internalAction`/`httpAction` are skipped outright
+  // (the `\b` word-boundary on `query`/`mutation` already excludes
+  // `internalQuery`/`internalMutation` — verified: no boundary exists between
+  // `l` and `Q`/`M` in those identifiers, so this never fires on them).
+  const identityArgFieldRe = /\b(userId|actorId|ownerId|authorId|accountId)\s*:\s*v\.id\(/g;
+  const publicFnRe = /\b(query|mutation)\(\s*\{/g;
+  let pubFnMatch;
+  while ((pubFnMatch = publicFnRe.exec(projected)) !== null) {
+    const openBraceIndex = pubFnMatch.index + pubFnMatch[0].length - 1;
+    const blockEnd = findMatchingClose(projected, openBraceIndex);
+    const block = projected.slice(pubFnMatch.index, blockEnd);
+
+    // Only look inside this function's own `args: { ... }` sub-object, not
+    // the whole block, so a same-named field in a sibling function (or in
+    // `returns:`) can't cross-contaminate.
+    const argsKeyMatch = /\bargs\s*:\s*\{/.exec(block);
+    if (!argsKeyMatch) continue;
+    const argsOpenBrace = argsKeyMatch.index + argsKeyMatch[0].length - 1;
+    const argsBlockEnd = findMatchingClose(block, argsOpenBrace);
+    const argsBlock = block.slice(argsKeyMatch.index, argsBlockEnd);
+
+    identityArgFieldRe.lastIndex = 0;
+    const idFieldMatch = identityArgFieldRe.exec(argsBlock);
+    if (!idFieldMatch) continue;
+
+    // Zero `ctx.auth` anywhere in the function block (args + handler both) —
+    // deliberately whole-block, not handler-only, so this can't be defeated
+    // by a `ctx.auth` reference living just outside the slice we happened to
+    // take.
+    if (/\bctx\.auth\b/.test(block)) continue;
+
+    const fieldName = idFieldMatch[1];
+    if (firstWarningRule === null) firstWarningRule = "identity_arg_no_ctx_auth";
+    warnings.push(
+      `convex-lint: \`${fieldName}: v.id(...)\` in \`${filePath}\` — this ` +
+        `public function takes \`${fieldName}\` as a client-supplied ` +
+        `argument and never references \`ctx.auth\` anywhere in its body. ` +
+        `Taking ${fieldName} as an argument lets any caller impersonate ` +
+        `another user — derive identity from \`await ` +
+        `ctx.auth.getUserIdentity()\` instead; if this is an internal/admin ` +
+        `fn, ignore.`,
     );
   }
 
