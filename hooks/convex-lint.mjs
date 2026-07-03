@@ -76,6 +76,19 @@
 //        `eq`/`gt`/`gte`/`lt`/`lte` exist, chained directly; verified against
 //        the package's `.d.ts`). Confirmed real defect (warehouse/haiku
 //        `dashboard.ts:10`).
+//     13. `.count()` chained onto a `ctx.db.query(...)` builder — not a real
+//        method (`Query`/`OrderedQuery` expose `collect`/`take`/`first`/
+//        `unique`/`paginate`, verified against the package's `.d.ts`).
+//        Confirmed real defect (kanban/haiku-plugin `board.ts:56`).
+//     14. `.skip(...)` chained onto a `ctx.db.query(...)` builder — not a
+//        real method; there is no offset-based pagination in Convex.
+//        Confirmed real defect (ledger/haiku `accounting.ts:248`).
+//     15. `ctx.runQuery`/`runMutation`/`runAction` called with a string
+//        literal first argument (e.g. `ctx.runMutation("users:getOrCreateUser",
+//        ...)`) — a string can never satisfy the `FunctionReference` type
+//        these calls require, so this is always a hard TypeScript/deploy
+//        failure. Confirmed real defect (booking/haiku `http.ts:22`, kanban/
+//        haiku `http.ts:31`).
 // - `app.use(X)` in `convex.config.ts` where `X`'s import comes from a
 //   relative path (e.g. `./http`) is an ADVISORY, not a deny — legitimate
 //   components are mounted via a package's `convex.config` subpath
@@ -85,7 +98,10 @@
 // - Everything else (missing `args:` / `returns:` on a function object, an
 //   unbounded `.collect()`, `ctx.runQuery`/`runMutation`/`runAction` called
 //   with a bare module-namespace reference instead of `api.*`/`internal.*`
-//   (confirmed defect: forum/haiku-plugin `http.ts:2,27`), and a numeric
+//   (confirmed defect: forum/haiku-plugin `http.ts:2,27`), the sibling shape
+//   where a *named* (non-namespace) import is passed directly instead of an
+//   `api.*`/`internal.*` reference (confirmed defect: ledger/haiku
+//   `http.ts:26,32` — `ctx.runMutation(createAccount, ...)`), and a numeric
 //   `args` field named like a score/vote/qty delta with no visible bound
 //   (confirmed defect: forum/haiku `votes.ts:30`, warehouse/opus-plugin
 //   `stock.ts:20`)) is a soft advisory delivered via `additionalContext` on
@@ -664,6 +680,109 @@ try {
     }
   }
 
+  // Rule 13: `.count()` chained onto a `ctx.db.query(...)` builder. Not a
+  // real method — verified against the installed `convex` package's
+  // `Query`/`OrderedQuery` types (`.d.ts`), which expose `collect`, `take`,
+  // `first`, `unique`, `paginate`, but no `.count()`. Confirmed real defect
+  // (kanban/haiku-plugin `board.ts:56` — `ctx.db.query("comments")
+  // .withIndex("by_card", ...).count()` throws a TypeError on every
+  // `getBoard` call for a card with any comments). Unambiguous: scoped to a
+  // `ctx.db.query(` chain (same discriminator style as Rule 12's
+  // `.withIndex` scoping) so an unrelated same-named `.count()` on a
+  // different object (e.g. a plain array or a third-party client) can't
+  // false-positive.
+  const dbQueryCountRe = /ctx\.db\s*\.query\(/g;
+  let dqc;
+  while ((dqc = dbQueryCountRe.exec(projected)) !== null) {
+    const chainEnd = Math.min(projected.length, dqc.index + 500);
+    let chain = projected.slice(dqc.index, chainEnd);
+    const terminatorMatch = /;|\n\s*\n/.exec(chain);
+    if (terminatorMatch) chain = chain.slice(0, terminatorMatch.index);
+    const countMatch = /\.count\(\s*\)/.exec(chain);
+    if (countMatch) {
+      track("db_query_count_method", "deny");
+      deny(
+        `convex-lint rule "ctx.db.query .count() is not a method": this ` +
+          `write contains \`${snippet(chain.slice(0, countMatch.index + countMatch[0].length))}\` ` +
+          `— \`.count()\` is not a method on Convex's query builder ` +
+          `(\`Query\`/\`OrderedQuery\` expose \`collect\`, \`take\`, ` +
+          `\`first\`, \`unique\`, \`paginate\` — no \`.count()\`). This ` +
+          `throws a TypeError at runtime on every call. Fix: materialize ` +
+          `the rows with \`.collect()\` (or a bounded \`.take(n)\`/` +
+          `\`.paginate(...)\`) and read \`.length\`, or maintain a running ` +
+          `counter field on the parent document if the table can grow ` +
+          `large.`,
+      );
+    }
+  }
+
+  // Rule 14: `.skip(` chained onto a `ctx.db.query(...)` builder. Not a real
+  // method — Convex's query builder has no offset-based pagination; use an
+  // index range (`.withIndex`) or the cursor-based `.paginate(paginationOpts)`
+  // instead. Confirmed real defect (ledger/haiku `accounting.ts:248` —
+  // `.order("desc").skip(skip).take(limit).collect()` throws `TypeError:
+  // skip is not a function` on every call, and even if it existed,
+  // `.take(n)` already returns an array, which has no further `.collect()`).
+  // Unambiguous for the same reason as Rule 13: scoped to a `ctx.db.query(`
+  // chain so it can't collide with an unrelated `.skip(` on some other API
+  // (e.g. a test-runner or stream object) outside that chain.
+  const dbQuerySkipRe = /ctx\.db\s*\.query\(/g;
+  let dqs;
+  while ((dqs = dbQuerySkipRe.exec(projected)) !== null) {
+    const chainEnd = Math.min(projected.length, dqs.index + 500);
+    let chain = projected.slice(dqs.index, chainEnd);
+    const terminatorMatch = /;|\n\s*\n/.exec(chain);
+    if (terminatorMatch) chain = chain.slice(0, terminatorMatch.index);
+    const skipMatch = /\.skip\(\s*[^)]*\)/.exec(chain);
+    if (skipMatch) {
+      track("db_query_skip_method", "deny");
+      deny(
+        `convex-lint rule "ctx.db.query .skip() is not a method": this ` +
+          `write contains \`${snippet(chain.slice(0, skipMatch.index + skipMatch[0].length))}\` ` +
+          `— \`.skip(...)\` is not a method on Convex's query builder; ` +
+          `there is no offset-based pagination. This throws a TypeError at ` +
+          `runtime on every call. Fix: use cursor-based pagination via ` +
+          `\`.paginate(paginationOpts)\` (returns \`{ page, isDone, ` +
+          `continueCursor }\`), or an index range with \`.withIndex(...)\` ` +
+          `plus \`.take(n)\` if you only need a bounded page from a known ` +
+          `starting point.`,
+      );
+    }
+  }
+
+  // Rule 15: `ctx.runQuery(...)` / `ctx.runMutation(...)` / `ctx.runAction(...)`
+  // whose first argument is a string literal (e.g.
+  // `ctx.runMutation("users:getOrCreateUser", {...})`). Confirmed real
+  // defect (booking/haiku `http.ts:22` — `ctx.runMutation("users:getOrCreateUser",
+  // ...)`; kanban/haiku `http.ts:31` — `ctx.runMutation("boards:createBoard",
+  // ...)`). Convex's `ctx.runQuery`/`ctx.runMutation`/`ctx.runAction` require
+  // a `FunctionReference` object produced by codegen (`api.foo.bar` /
+  // `internal.foo.bar`); a plain string can never satisfy that type, so this
+  // is a hard deploy-blocking TypeScript error every time, stronger than the
+  // module-namespace-reference case below (which at least *could* look like
+  // a valid reference to a naive regex) — no false-positive risk at all: a
+  // string literal is never a valid first argument to any of these three
+  // calls.
+  const runCallStringRe =
+    /\bctx\.(runQuery|runMutation|runAction)\(\s*(["'`])([^"'`]*)\2/g;
+  let runCallStringMatch;
+  while ((runCallStringMatch = runCallStringRe.exec(projected)) !== null) {
+    const [full, runFn, , literalName] = runCallStringMatch;
+    track("run_call_string_literal", "deny");
+    deny(
+      `convex-lint rule "ctx.${runFn} with string literal": this write ` +
+        `contains \`${snippet(full)}\` — \`ctx.${runFn}\` requires a ` +
+        `\`FunctionReference\` object from \`./_generated/api\` ` +
+        `(\`api.*\`/\`internal.*\`), not a string like \`"${literalName}"\`. ` +
+        `A string can never satisfy that type, so this is a hard ` +
+        `TypeScript/deploy failure. Fix: split \`"${literalName}"\` on \`:\` ` +
+        `to find the module and export (e.g. \`"users:getOrCreateUser"\` → ` +
+        `\`api.users.getOrCreateUser\`), import ` +
+        `\`{ api, internal } from "./_generated/api"\`, and call ` +
+        `\`ctx.${runFn}(api.users.getOrCreateUser, {...})\` instead.`,
+    );
+  }
+
   // --- SOFT WARNINGS (never deny) ----------------------------------------
   // Heuristic: each `query({`-style block whose first ~300 chars contain no
   // `args:` / `returns:` gets one advisory line.
@@ -700,7 +819,7 @@ try {
   // defect class from the eval (Finding 2). This never denies: `.collect()`
   // is legitimate on small/bounded tables and the analyzer can't know table
   // size, so it's advisory-only, same discipline as the args/returns checks.
-  const dbQueryRe = /ctx\.db\.query\(/g;
+  const dbQueryRe = /ctx\.db\s*\.query\(/g;
   let dq;
   while ((dq = dbQueryRe.exec(projected)) !== null) {
     const chainEnd = Math.min(projected.length, dq.index + 500);
@@ -813,6 +932,53 @@ try {
               `is the raw exported function, not a Convex function ` +
               `reference. \`ctx.${runFn}\` needs \`api.${ns}.${member}\` or ` +
               `\`internal.${ns}.${member}\` (imported from ` +
+              `\`./_generated/api\`) — this fails at runtime even though it ` +
+              `typechecks.`,
+          );
+        }
+      }
+    }
+
+    // Sibling shape: a *named* (non-namespace) import of a handler used
+    // directly as the run-call argument, e.g.
+    // `import { createAccount } from "./accounting"; ...
+    // ctx.runMutation(createAccount, {...})`. Same underlying bug as the
+    // namespace case above (the raw function value isn't a
+    // `FunctionReference`), just a different import shape. Confirmed real
+    // defect (ledger/haiku `http.ts:26,32` — `import { createAccount, ... }
+    // from "./accounting"` then `ctx.runMutation(createAccount, {...})`).
+    // Advisory, not deny, for the same reason as the namespace case: the
+    // imported identifier name is project-specific, and a regex can't fully
+    // rule out a same-named local variable that happens to hold a real
+    // `api.*` reference (e.g. `const createAccount = api.accounting.createAccount;`),
+    // so this stays a warning per the hook's "hard-deny only when
+    // unambiguous" discipline.
+    const namedImports = new Set();
+    const namedImportRe = /import\s*\{([^}]*)\}\s*from\s*["'](\.\/[^"']*)["']/g;
+    let namedMatch;
+    while ((namedMatch = namedImportRe.exec(projected)) !== null) {
+      if (/_generated\/(api|server)$/.test(namedMatch[2])) continue; // real refs live here
+      for (const part of namedMatch[1].split(",")) {
+        const localName = part.split(/\s+as\s+/).pop().trim();
+        if (localName && localName !== "api" && localName !== "internal") {
+          namedImports.add(localName);
+        }
+      }
+    }
+    if (namedImports.size > 0) {
+      const directRunCallRe = /\bctx\.(runQuery|runMutation|runAction)\(\s*(\w+)\s*[,)]/g;
+      let directRunMatch;
+      while ((directRunMatch = directRunCallRe.exec(projected)) !== null) {
+        const [, runFn, fnName] = directRunMatch;
+        if (namedImports.has(fnName)) {
+          if (firstWarningRule === null) firstWarningRule = "run_call_named_import_ref";
+          warnings.push(
+            `convex-lint: \`ctx.${runFn}(${fnName}, ...)\` in ` +
+              `\`${filePath}\` — \`${fnName}\` was imported directly ` +
+              `(\`import { ${fnName} } from "./..."\`), so it's the raw ` +
+              `exported function, not a Convex function reference. ` +
+              `\`ctx.${runFn}\` needs \`api.<module>.${fnName}\` or ` +
+              `\`internal.<module>.${fnName}\` (imported from ` +
               `\`./_generated/api\`) — this fails at runtime even though it ` +
               `typechecks.`,
           );
