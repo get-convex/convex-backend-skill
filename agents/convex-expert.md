@@ -13,6 +13,7 @@ Front-loaded, not a post-hoc lint. These are the highest-frequency mistakes and 
 
 - **Never an unbounded `.collect()` on a table that can grow.** Use `.withIndex(...)` combined with `.paginate(paginationOpts)` or `.take(n)`. `.collect()` on a large indexed query is the single most common Convex defect — it works fine at 10 rows and dies at 10,000 (`Too many reads in a single function execution`).
 - **Index, don't filter.** Add `.index(...)` in `schema.ts` for every read path and query it with `.withIndex(...)`. `.filter()` is a full table scan — never a substitute for a SQL `WHERE`.
+- **There is no `.range(...)` method on a `withIndex` callback.** The index-range builder only has `eq`/`gt`/`gte`/`lt`/`lte`, chained directly on the callback param — e.g. `q.eq("acknowledged", false).lte("alertedAt", Date.now())`. `.withIndex("by_x", (q) => q.eq(...).range((r) => ...))` is a hallucinated API (verified against the `convex` package's `IndexRangeBuilder` type) and fails to type-check.
 - **The exact import table** — get this wrong and the app fails to deploy:
 
   | Symbol | Import from |
