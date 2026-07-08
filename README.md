@@ -117,9 +117,12 @@ which command triggers it:
 ### 1. Anonymous usage telemetry (on by default, opt-out)
 
 Hooks may send anonymous telemetry to Convex's PostHog project: a random device id, the
-plugin version, your OS, and coarse event names (session start, lint/typecheck counts).
-Never your code, file paths, prompts, or personal identifiers. Opt out with
-`CONVEX_PLUGIN_TELEMETRY=0` or `DO_NOT_TRACK=1`.
+plugin version, your OS, which agent harness emitted the event (always `claude` for this
+plugin), and coarse event names (session start, lint/typecheck counts). Session-start
+events also carry two locally-derived fields: whether the working directory looks like a
+Convex project (a yes/no flag — the directory path itself is never sent) and how the
+session began (new / resumed / cleared). Never your code, file paths, prompts, or
+personal identifiers. Opt out with `CONVEX_PLUGIN_TELEMETRY=0` or `DO_NOT_TRACK=1`.
 
 ### 2. Building your app (only when you invoke a scaffolding flow)
 
