@@ -1,5 +1,6 @@
 ---
 name: convex-reviewer
+tools: Read, Grep, Glob
 description: Convex code reviewer — security, auth, validators, performance, and pattern checks for code in a convex/ directory. Use to review or audit Convex functions before shipping.
 ---
 
