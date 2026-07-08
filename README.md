@@ -107,11 +107,24 @@ The plugin steers Claude toward the right Convex primitive for each task:
 
 **Convex** — [convex.dev](https://convex.dev) — the open-source reactive database for fullstack apps. Issues and feature requests: [github.com/get-convex/convex-backend-skill/issues](https://github.com/get-convex/convex-backend-skill/issues).
 
-## Telemetry
+## Privacy & data
 
-The plugin's hooks can emit anonymous usage telemetry to PostHog: a random device id (stored at `~/.convex/plugin-device-id`), the plugin version, your OS platform, and coarse event names (session start, lint findings by rule, typecheck failure counts). **Never** code contents, file paths, prompts, or any personal identifiers.
+The plugin connects to remote services and collects anonymous usage data. See the [Convex privacy policy](https://convex.dev/legal/privacy). There are two separate data flows:
+
+### Anonymous usage telemetry
+
+The plugin's hooks can emit anonymous usage telemetry to PostHog: a random device id (stored at `~/.convex/plugin-device-id`), the plugin version, your OS platform, and coarse event names (session start, lint findings by rule, typecheck failure counts). This telemetry **never** includes your code, file paths, prompts, or any personal identifiers.
 
 Telemetry is **on by default** (it ships with Convex's public, write-only PostHog project key). To opt out, set `CONVEX_PLUGIN_TELEMETRY=0` or `DO_NOT_TRACK=1`; to redirect it to your own project, set `CONVEX_PLUGIN_POSTHOG_KEY` (an empty value disables sending entirely). Sending is fire-and-forget in a detached process and never delays Claude.
+
+### Quickstart & `/add` scaffolding service
+
+The `quickstart` (`/quickstart`) and `/add` flows connect to the Convex scaffolding service to build your app, so they send and receive more than the anonymous telemetry above:
+
+- When you run `/quickstart`, the one-sentence app idea you provide is sent to the Convex scaffolding endpoint (and logged as a run start) so the service can scaffold and build the app.
+- Both flows download and execute setup scripts from that endpoint at scaffold time.
+
+This happens only when you invoke those flows. If you don't run `quickstart` or `/add`, no prompt or app idea leaves your machine.
 
 ## License
 
