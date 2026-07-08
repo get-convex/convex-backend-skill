@@ -123,8 +123,9 @@ The `quickstart` (`/quickstart`) and `/add` flows connect to the Convex scaffold
 
 - When you run `/quickstart`, the one-sentence app idea you provide is sent to the Convex scaffolding endpoint (and logged as a run start) so the service can scaffold and build the app.
 - Both flows download and execute setup scripts from that endpoint at scaffold time.
+- If a `quickstart` run goes poorly, the plugin may offer to send a **redacted** copy of the session transcript to the Convex team to help fix what broke. This is sent **only after you explicitly agree** — never automatically.
 
-This happens only when you invoke those flows. If you don't run `quickstart` or `/add`, no prompt or app idea leaves your machine.
+This happens only when you invoke those flows. If you don't run `quickstart` or `/add`, no prompt, app idea, or transcript leaves your machine.
 
 ## License
 
