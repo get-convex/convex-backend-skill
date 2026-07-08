@@ -20,14 +20,16 @@
 //     * DO_NOT_TRACK is "1"/"true" → disabled (ecosystem convention).
 // - Privacy: NO code contents, file paths, prompts, or user identifiers ever
 //   go into event properties. Only an anonymous random device id
-//   (~/.convex/plugin-device-id), the plugin version, OS platform, and
-//   coarse event metadata (rule slugs, error counts). snake_case event names.
+//   (~/.convex/plugin-device-id), the plugin version, OS platform, the fixed
+//   harness tag ("claude"), locally-derived booleans (e.g. convex_project),
+//   and coarse event metadata (rule slugs, error counts, session source).
+//   snake_case event names.
 // - Any filesystem failure (unwritable home dir, missing plugin.json) falls
 //   back silently — telemetry must never surface an error to the hook.
 
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -40,6 +42,13 @@ const DEFAULT_POSTHOG_KEY = "phc_JDNTRxeh2li2sQTRO0IcOYMJcp8fPs5nTK9TU751nQK";
 const POSTHOG_KEY = process.env.CONVEX_PLUGIN_POSTHOG_KEY ?? DEFAULT_POSTHOG_KEY;
 const POSTHOG_HOST =
   process.env.CONVEX_PLUGIN_POSTHOG_HOST ?? "https://us.i.posthog.com";
+
+// Which agent surface emits these events. The Convex plugins for other
+// harnesses (Codex, …) send the same event names to the same project, so
+// every event carries a `harness` discriminator — same vocabulary as the
+// `harness` standard property in convex-agents POSTHOG.md §3
+// (claude | codex | cursor | …). This plugin is the Claude Code surface.
+const HARNESS = "claude";
 
 function isDisabled() {
   if (!POSTHOG_KEY) return true;
@@ -87,6 +96,32 @@ function pluginVersion() {
   }
 }
 
+// Cheap, local-only probe: does `dir` look like a Convex project? Used to
+// attach a `convex_project: true|false` boolean to session events so
+// installed-base sessions can be split from sessions doing actual Convex
+// work. Only the boolean ever leaves the machine — never the path. Any fs
+// error (missing dir, no permission) counts as "not a Convex project".
+export function isConvexProject(dir) {
+  if (typeof dir !== "string" || !dir) return false;
+  try {
+    if (statSync(join(dir, "convex")).isDirectory()) return true;
+  } catch {
+    // no convex/ dir — keep probing
+  }
+  try {
+    if (statSync(join(dir, "convex.json")).isFile()) return true;
+  } catch {
+    // no convex.json — keep probing
+  }
+  try {
+    const pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
+    if (pkg?.dependencies?.convex || pkg?.devDependencies?.convex) return true;
+  } catch {
+    // no readable package.json
+  }
+  return false;
+}
+
 // Fire-and-forget event capture. Safe to call from any hook path: a no-op
 // when telemetry is disabled, and otherwise returns immediately after
 // spawning the detached emitter child. Never throws.
@@ -99,6 +134,7 @@ export function capture(event, properties = {}) {
       distinct_id: deviceId(),
       properties: {
         ...properties,
+        harness: HARNESS,
         plugin_version: pluginVersion(),
         $process_person_profile: false,
       },
