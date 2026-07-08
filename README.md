@@ -109,23 +109,34 @@ The plugin steers Claude toward the right Convex primitive for each task:
 
 ## Privacy & data
 
-The plugin connects to remote services and collects anonymous usage data. See the [Convex privacy policy](https://convex.dev/legal/privacy). There are two separate data flows:
+This plugin connects to Convex services and collects anonymous usage data. See the
+[Convex privacy policy](https://convex.dev/legal/privacy) for full details and your rights.
+Three kinds of data can leave your machine, each governed by a rule that holds no matter
+which command triggers it:
 
-### Anonymous usage telemetry
+### 1. Anonymous usage telemetry (on by default, opt-out)
 
-The plugin's hooks can emit anonymous usage telemetry to PostHog: a random device id (stored at `~/.convex/plugin-device-id`), the plugin version, your OS platform, and coarse event names (session start, lint findings by rule, typecheck failure counts). This telemetry **never** includes your code, file paths, prompts, or any personal identifiers.
+Hooks may send anonymous telemetry to Convex's PostHog project: a random device id, the
+plugin version, your OS, and coarse event names (session start, lint/typecheck counts).
+Never your code, file paths, prompts, or personal identifiers. Opt out with
+`CONVEX_PLUGIN_TELEMETRY=0` or `DO_NOT_TRACK=1`.
 
-Telemetry is **on by default** (it ships with Convex's public, write-only PostHog project key). To opt out, set `CONVEX_PLUGIN_TELEMETRY=0` or `DO_NOT_TRACK=1`; to redirect it to your own project, set `CONVEX_PLUGIN_POSTHOG_KEY` (an empty value disables sending entirely). Sending is fire-and-forget in a detached process and never delays Claude.
+### 2. Building your app (only when you invoke a scaffolding flow)
 
-### Quickstart & `/add` scaffolding service
+Flows that scaffold or extend an app (such as `quickstart` and `/add`) send the inputs you
+give them to the Convex scaffolding service so it can build for you — for example, the
+one-sentence idea you type is sent to the scaffolding endpoint and logged as a run start.
+These flows also download and run setup scripts from that service. This happens only when
+you invoke such a flow.
 
-The `quickstart` (`/quickstart`) and `/add` flows connect to the Convex scaffolding service to build your app, so they send and receive more than the anonymous telemetry above:
+### 3. Sharing a session to improve the tools (only with your explicit consent)
 
-- When you run `/quickstart`, the one-sentence app idea you provide is sent to the Convex scaffolding endpoint (and logged as a run start) so the service can scaffold and build the app.
-- Both flows download and execute setup scripts from that endpoint at scaffold time.
-- If a `quickstart` run goes poorly, the plugin may offer to send a **redacted** copy of the session transcript to the Convex team to help fix what broke. This is sent **only after you explicitly agree** — never automatically.
+Some flows can offer to send a **redacted** copy of your current session — for example, to
+report how a build went or to help improve these tools. Whenever a flow does this, two rules
+always apply: it is sent **only after you explicitly agree in the conversation, never
+automatically**, and secrets are redacted first.
 
-This happens only when you invoke those flows. If you don't run `quickstart` or `/add`, no prompt, app idea, or transcript leaves your machine.
+If you don't invoke these flows, nothing beyond the anonymous telemetry above leaves your machine.
 
 ## License
 
