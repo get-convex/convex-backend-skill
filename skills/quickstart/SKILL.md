@@ -94,10 +94,10 @@ The log's tail (everything from `═══ STEP A` onward) is your runbook, with
 
 ## STEP A — watch the logs between every action
 
-The bootstrap already armed `tail -F | grep` watchers. It printed the paths in the final report — find them in `.quickstart-bootstrap.log`:
+The bootstrap armed `tail -F | grep` watchers and symlinked its log dir into your cwd as `.quickstart-logs/`. Tail them by these FIXED relative paths — do **not** run `find` to locate them (on Claude Code `find` is a whole-filesystem parallel scan that pins every core):
 
-- `…/convex-errors.log` — filtered Convex log (compile errors, runtime throws, schema validation, limits, OCC). New lines = **stop coding and read them.**
-- `…/next-errors.log` — filtered Next.js log (compile errors, runtime throws, 5xx, hydration mismatches). Same rule.
+- `.quickstart-logs/convex-errors.log` — filtered Convex log (compile errors, runtime throws, schema validation, limits, OCC). New lines = **stop coding and read them.**
+- `.quickstart-logs/next-errors.log` — filtered Next.js log (compile errors, runtime throws, 5xx, hydration mismatches). Same rule.
 
 **Use the Claude Code `Monitor` tool** to push-notify on new lines in the two `*-errors.log` files so you get errors as push, not polling. (This plugin's `convex-runtime-errors` monitor covers the linked deployment too; the bootstrap's pre-filtered files are more specific to this run.) **Verify a watcher actually fires** before trusting it: drop a `throw new Error("test")` into a query the UI calls, confirm a notification, then revert. A silent watcher is worse than none.
 
