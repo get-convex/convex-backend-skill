@@ -307,6 +307,28 @@ test("allows a legit convex/server import (httpRouter, defineSchema)", () => {
   assertAllowedSilent(result);
 });
 
+test("allows inline type specifiers alongside a value import (FilterBuilder, NamedTableInfo)", () => {
+  const result = runHook(
+    writePayload(
+      "/tmp/proj/convex/threads.ts",
+      `import { paginationOptsValidator, type FilterBuilder, type NamedTableInfo } from "convex/server";\n` +
+        `export const opts = paginationOptsValidator;\n`,
+    ),
+  );
+  assertAllowedSilent(result);
+});
+
+test("still denies a hallucinated value symbol next to a type specifier", () => {
+  const result = runHook(
+    writePayload(
+      "/tmp/proj/convex/http.ts",
+      `import { type FilterBuilder, HttpResponse } from "convex/server";\n` +
+        `export function handler() { return new HttpResponse("ok"); }\n`,
+    ),
+  );
+  assertDenied(result, "convex/server bad symbol");
+});
+
 // --- app.use() advisory: relative-path import into app.use() --------------
 
 test('advises (does not deny) on `app.use(http)` with `import http from "./http"`', () => {

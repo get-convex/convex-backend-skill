@@ -437,6 +437,13 @@ try {
       .map((p) => p.trim())
       .filter(Boolean);
     for (const part of parts) {
+      // A `type Foo` specifier is a type-only import: it is erased at build
+      // time, so it cannot cause the deploy-time missing-export failure this
+      // rule guards against, and `convex/server` exports many type-only names
+      // (`FilterBuilder`, `NamedTableInfo`, `GenericQueryCtx`, …) that are
+      // deliberately not in the value-export set above. Skip it rather than
+      // risk a false deny — the TypeScript checker owns type-name correctness.
+      if (/^type\s/.test(part)) continue;
       // `Foo` or `Foo as Bar` — the exported name is the part before `as`.
       const exportedName = part.split(/\s+as\s+/)[0].trim();
       if (!exportedName) continue;
