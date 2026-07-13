@@ -210,6 +210,54 @@ function collectServerExports(file, names, depth) {
   }
 }
 
+// Complete fallback, used only when the target project’s `convex` can’t be
+// resolved (e.g. before `npm install`). Regenerate from the .d.ts (NOT
+// `Object.keys(require())`, which drops types) — snapshot of convex@1.42.1.
+const FALLBACK_SERVER_EXPORTS = new Set([
+  "ActionBuilder", "ActionMeta", "AdvancedRunQueryOptions", "AnyApi",
+  "AnyChildComponents", "AnyComponents", "AnyDataModel", "ApiFromModules",
+  "AppDefinition", "ArgsAndOptions", "ArgsArray", "ArgsArrayForOptionalValidator",
+  "ArgsArrayToObject", "AuditLogBody", "AuditLogValue", "Auth",
+  "AuthConfig", "AuthProvider", "BaseTableReader", "BaseTableWriter",
+  "BetterOmit", "ComponentDefinition", "CronJob", "Crons",
+  "Cursor", "DataModelFromSchemaDefinition", "DefaultArgsForOptionalValidator", "DefaultFunctionArgs",
+  "DefineSchemaOptions", "DeploymentMetadata", "DocumentByInfo", "DocumentByName",
+  "EnvDefinition", "EnvFromAppDefinition", "EnvFromDefinition", "Expand",
+  "Expression", "ExpressionOrValue", "FieldPaths", "FieldTypeFromFieldPath",
+  "FieldTypeFromFieldPathInner", "FileMetadata", "FileStorageId", "FilterApi",
+  "FilterBuilder", "FilterExpression", "FunctionArgs", "FunctionHandle",
+  "FunctionMetadata", "FunctionReference", "FunctionReturnType", "FunctionType",
+  "FunctionVisibility", "GenericActionCtx", "GenericDataModel", "GenericDatabaseReader",
+  "GenericDatabaseReaderWithTable", "GenericDatabaseWriter", "GenericDatabaseWriterWithTable", "GenericDocument",
+  "GenericFieldPaths", "GenericIndexFields", "GenericMutationCtx", "GenericMutationCtxWithTable",
+  "GenericQueryCtx", "GenericQueryCtxWithTable", "GenericSchema", "GenericSearchIndexConfig",
+  "GenericTableIndexes", "GenericTableInfo", "GenericTableSearchIndexes", "GenericTableVectorIndexes",
+  "GenericVectorIndexConfig", "HttpActionBuilder", "HttpRouter", "IdField",
+  "IndexNames", "IndexRange", "IndexRangeBuilder", "IndexTiebreakerField",
+  "Indexes", "MutationBuilder", "MutationBuilderWithTable", "MutationMeta",
+  "NamedIndex", "NamedSearchIndex", "NamedTableInfo", "NamedVectorIndex",
+  "OptionalRestArgs", "OrderedQuery", "PaginationOptions", "PaginationResult",
+  "PartialApi", "PublicHttpAction", "Query", "QueryBuilder",
+  "QueryBuilderWithTable", "QueryInitializer", "QueryMeta", "ROUTABLE_HTTP_METHODS",
+  "RegisteredAction", "RegisteredMutation", "RegisteredQuery", "RequestMetadata",
+  "ReturnValueForOptionalValidator", "RoutableMethod", "RouteSpec", "RouteSpecWithPath",
+  "RouteSpecWithPathPrefix", "SchedulableFunctionReference", "Scheduler", "SchemaDefinition",
+  "SearchFilter", "SearchFilterBuilder", "SearchFilterFinalizer", "SearchIndexConfig",
+  "SearchIndexNames", "SearchIndexes", "StorageActionWriter", "StorageId",
+  "StorageReader", "StorageWriter", "SystemDataModel", "SystemFields",
+  "SystemIndexes", "SystemTableNames", "TableDefinition", "TableNamesInDataModel",
+  "TransactionLimits", "TransactionMetric", "TransactionMetrics", "UnvalidatedFunction",
+  "UserIdentity", "UserIdentityAttributes", "ValidatedFunction", "ValidatorTypeToReturnType",
+  "VectorFilterBuilder", "VectorIndexConfig", "VectorIndexNames", "VectorIndexes",
+  "VectorSearch", "VectorSearchQuery", "WithOptionalSystemFields", "WithoutSystemFields",
+  "actionGeneric", "anyApi", "componentsGeneric", "createFunctionHandle",
+  "cronJobs", "defineApp", "defineComponent", "defineSchema",
+  "defineTable", "filterApi", "getFunctionAddress", "getFunctionName",
+  "httpActionGeneric", "httpRouter", "internalActionGeneric", "internalMutationGeneric",
+  "internalQueryGeneric", "log", "makeFunctionReference", "mutationGeneric",
+  "paginationOptsValidator", "paginationResultValidator", "queryGeneric",
+]);
+
 let _serverExports; // memoized per process
 function convexServerExports(cwd) {
   if (_serverExports !== undefined) return _serverExports;
@@ -223,9 +271,9 @@ function convexServerExports(cwd) {
     if (!dtsRel) return (_serverExports = null);
     const names = new Set();
     collectServerExports(resolve(dirname(pkgPath), dtsRel), names, 0);
-    _serverExports = names.size ? names : null;
+    _serverExports = names.size ? names : FALLBACK_SERVER_EXPORTS;
   } catch {
-    _serverExports = null;
+    _serverExports = FALLBACK_SERVER_EXPORTS;
   }
   return _serverExports;
 }
