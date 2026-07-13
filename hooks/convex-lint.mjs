@@ -119,8 +119,9 @@
 // - Edge discipline: a hard-deny false positive is the worst outcome. When in
 //   doubt, allow; any internal error → exit 0 silent (try/catch everywhere).
 
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { readFileSync, existsSync } from "node:fs";
+import { resolve, dirname, join } from "node:path";
+import { createRequire } from "node:module";
 import { capture } from "./analytics.mjs";
 
 // Fire-and-forget telemetry (one event per hook run, primary finding only).
@@ -173,44 +174,109 @@ function allowWithWarnings(warnings) {
   });
 }
 
-// Ground truth for Rule 6: the real named exports of the `convex/server`
-// package entrypoint. Generated with:
-//   cd /tmp && npm i convex --no-save && node -e \
-//     'console.log(JSON.stringify(Object.keys(require("convex/server"))))'
-// against convex@1.42.1 (2026-07-02). Re-run that command and update this
-// list if the package's public surface changes — it is intentionally a
-// static snapshot, not a runtime `require`, because this hook must work
-// inside a target project that may have a different (or no) `convex`
-// resolution from this plugin's own process.
-const CONVEX_SERVER_EXPORTS = new Set([
-  "HttpRouter",
-  "ROUTABLE_HTTP_METHODS",
-  "actionGeneric",
-  "anyApi",
-  "componentsGeneric",
-  "createFunctionHandle",
-  "cronJobs",
-  "currentSystemUdfInComponent",
-  "defineApp",
-  "defineComponent",
-  "defineSchema",
-  "defineTable",
-  "filterApi",
-  "getFunctionAddress",
-  "getFunctionName",
-  "httpActionGeneric",
-  "httpRouter",
-  "internalActionGeneric",
-  "internalMutationGeneric",
-  "internalQueryGeneric",
-  "log",
-  "makeFunctionReference",
-  "mutationGeneric",
-  "queryGeneric",
-  "paginationOptsValidator",
-  "paginationResultValidator",
-  "SearchFilter",
+// Ground truth for Rule 6: the real named exports of `convex/server`. We DERIVE
+// this live from the target project's own installed `convex` instead of a
+// hardcoded snapshot. The old snapshot was generated with
+// `Object.keys(require("convex/server"))`, which erases every type-only export —
+// so `DeploymentMetadata`, `UserIdentity`, `GenericQueryCtx`, `Auth`, `Scheduler`
+// and ~140 others were missing and false-positived. Deriving from the `.d.ts`
+// captures types + values, self-updates with the project's Convex version, and
+// costs a few file reads. If `convex` can't be resolved we return null and Rule 6
+// no-ops (a genuinely bad import still fails tsc/build), so it can never
+// false-positive.
+function collectServerExports(file, names, depth) {
+  if (depth > 6 || !existsSync(file)) return;
+  const src = readFileSync(file, "utf8");
+  // named re-exports: export [type] { A, B as C, type D } from "..."
+  for (const m of src.matchAll(/export\s+(?:type\s+)?\{([^}]*)\}/g)) {
+    for (let part of m[1].split(",")) {
+      part = part.trim().replace(/^type\s+/, "");
+      const name = (part.split(/\s+as\s+/).pop() || "").trim(); // exported name (after `as`)
+      if (/^[A-Za-z_$][\w$]*$/.test(name)) names.add(name);
+    }
+  }
+  // local declarations
+  for (const m of src.matchAll(
+    /export\s+declare\s+(?:const|function|class|let|var|abstract\s+class)\s+([A-Za-z_$][\w$]*)/g,
+  ))
+    names.add(m[1]);
+  for (const m of src.matchAll(/export\s+(?:interface|type)\s+([A-Za-z_$][\w$]*)/g))
+    names.add(m[1]);
+  // star re-exports: export * from "./x.js"
+  for (const m of src.matchAll(/export\s+\*\s+from\s+["']([^"']+)["']/g)) {
+    let t = m[1].replace(/\.js$/, ".d.ts");
+    if (!/\.d\.ts$/.test(t)) t += ".d.ts";
+    collectServerExports(resolve(dirname(file), t), names, depth + 1);
+  }
+}
+
+// Complete fallback, used only when the target project’s `convex` can’t be
+// resolved (e.g. before `npm install`). Regenerate from the .d.ts (NOT
+// `Object.keys(require())`, which drops types) — snapshot of convex@1.42.1.
+const FALLBACK_SERVER_EXPORTS = new Set([
+  "ActionBuilder", "ActionMeta", "AdvancedRunQueryOptions", "AnyApi",
+  "AnyChildComponents", "AnyComponents", "AnyDataModel", "ApiFromModules",
+  "AppDefinition", "ArgsAndOptions", "ArgsArray", "ArgsArrayForOptionalValidator",
+  "ArgsArrayToObject", "AuditLogBody", "AuditLogValue", "Auth",
+  "AuthConfig", "AuthProvider", "BaseTableReader", "BaseTableWriter",
+  "BetterOmit", "ComponentDefinition", "CronJob", "Crons",
+  "Cursor", "DataModelFromSchemaDefinition", "DefaultArgsForOptionalValidator", "DefaultFunctionArgs",
+  "DefineSchemaOptions", "DeploymentMetadata", "DocumentByInfo", "DocumentByName",
+  "EnvDefinition", "EnvFromAppDefinition", "EnvFromDefinition", "Expand",
+  "Expression", "ExpressionOrValue", "FieldPaths", "FieldTypeFromFieldPath",
+  "FieldTypeFromFieldPathInner", "FileMetadata", "FileStorageId", "FilterApi",
+  "FilterBuilder", "FilterExpression", "FunctionArgs", "FunctionHandle",
+  "FunctionMetadata", "FunctionReference", "FunctionReturnType", "FunctionType",
+  "FunctionVisibility", "GenericActionCtx", "GenericDataModel", "GenericDatabaseReader",
+  "GenericDatabaseReaderWithTable", "GenericDatabaseWriter", "GenericDatabaseWriterWithTable", "GenericDocument",
+  "GenericFieldPaths", "GenericIndexFields", "GenericMutationCtx", "GenericMutationCtxWithTable",
+  "GenericQueryCtx", "GenericQueryCtxWithTable", "GenericSchema", "GenericSearchIndexConfig",
+  "GenericTableIndexes", "GenericTableInfo", "GenericTableSearchIndexes", "GenericTableVectorIndexes",
+  "GenericVectorIndexConfig", "HttpActionBuilder", "HttpRouter", "IdField",
+  "IndexNames", "IndexRange", "IndexRangeBuilder", "IndexTiebreakerField",
+  "Indexes", "MutationBuilder", "MutationBuilderWithTable", "MutationMeta",
+  "NamedIndex", "NamedSearchIndex", "NamedTableInfo", "NamedVectorIndex",
+  "OptionalRestArgs", "OrderedQuery", "PaginationOptions", "PaginationResult",
+  "PartialApi", "PublicHttpAction", "Query", "QueryBuilder",
+  "QueryBuilderWithTable", "QueryInitializer", "QueryMeta", "ROUTABLE_HTTP_METHODS",
+  "RegisteredAction", "RegisteredMutation", "RegisteredQuery", "RequestMetadata",
+  "ReturnValueForOptionalValidator", "RoutableMethod", "RouteSpec", "RouteSpecWithPath",
+  "RouteSpecWithPathPrefix", "SchedulableFunctionReference", "Scheduler", "SchemaDefinition",
+  "SearchFilter", "SearchFilterBuilder", "SearchFilterFinalizer", "SearchIndexConfig",
+  "SearchIndexNames", "SearchIndexes", "StorageActionWriter", "StorageId",
+  "StorageReader", "StorageWriter", "SystemDataModel", "SystemFields",
+  "SystemIndexes", "SystemTableNames", "TableDefinition", "TableNamesInDataModel",
+  "TransactionLimits", "TransactionMetric", "TransactionMetrics", "UnvalidatedFunction",
+  "UserIdentity", "UserIdentityAttributes", "ValidatedFunction", "ValidatorTypeToReturnType",
+  "VectorFilterBuilder", "VectorIndexConfig", "VectorIndexNames", "VectorIndexes",
+  "VectorSearch", "VectorSearchQuery", "WithOptionalSystemFields", "WithoutSystemFields",
+  "actionGeneric", "anyApi", "componentsGeneric", "createFunctionHandle",
+  "cronJobs", "defineApp", "defineComponent", "defineSchema",
+  "defineTable", "filterApi", "getFunctionAddress", "getFunctionName",
+  "httpActionGeneric", "httpRouter", "internalActionGeneric", "internalMutationGeneric",
+  "internalQueryGeneric", "log", "makeFunctionReference", "mutationGeneric",
+  "paginationOptsValidator", "paginationResultValidator", "queryGeneric",
 ]);
+
+let _serverExports; // memoized per process
+function convexServerExports(cwd) {
+  if (_serverExports !== undefined) return _serverExports;
+  try {
+    const req = createRequire(join(cwd, "package.json"));
+    const pkgPath = req.resolve("convex/package.json");
+    const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
+    const sub = pkg.exports?.["./server"];
+    const dtsRel =
+      sub?.types ?? sub?.import?.types ?? (typeof sub === "string" ? sub : null);
+    if (!dtsRel) return (_serverExports = null);
+    const names = new Set();
+    collectServerExports(resolve(dirname(pkgPath), dtsRel), names, 0);
+    _serverExports = names.size ? names : FALLBACK_SERVER_EXPORTS;
+  } catch {
+    _serverExports = FALLBACK_SERVER_EXPORTS;
+  }
+  return _serverExports;
+}
 
 function readStdin() {
   try {
@@ -262,6 +328,9 @@ try {
   const toolInput = payload.tool_input ?? {};
   const filePath = toolInput.file_path ?? "";
   const cwd = payload.cwd ?? process.cwd();
+  // Real exports of convex/server, derived from the project's installed convex
+  // (null if unresolvable — Rule 6 then no-ops rather than guessing).
+  const serverExports = convexServerExports(cwd);
 
   // Only act on TypeScript source inside a convex/ directory.
   // Skip generated code and declaration files.
@@ -437,10 +506,12 @@ try {
       .map((p) => p.trim())
       .filter(Boolean);
     for (const part of parts) {
-      // `Foo` or `Foo as Bar` — the exported name is the part before `as`.
-      const exportedName = part.split(/\s+as\s+/)[0].trim();
+      // `Foo`, `type Foo`, or `Foo as Bar` — the exported name is the part
+      // before `as` (with an inline `type` modifier stripped).
+      const exportedName = part.replace(/^type\s+/, "").split(/\s+as\s+/)[0].trim();
       if (!exportedName) continue;
-      if (!CONVEX_SERVER_EXPORTS.has(exportedName)) {
+      // Only flag when we actually know the real export set; otherwise no-op.
+      if (serverExports && !serverExports.has(exportedName)) {
         track("server_pkg_bad_symbol", "deny");
         const hint =
           exportedName === "HttpResponse"
