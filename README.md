@@ -109,8 +109,10 @@ session_start_hook: true   # SessionStart anonymous telemetry
 # Monorepo: explicit Convex app roots, relative to the repo root. When set,
 # only these apps are verified/linted. When omitted, apps are auto-discovered
 # by attributing each touched file to its nearest enclosing Convex app.
-# An empty list (`[]`) is an explicit allowlist of nothing — hooks no-op for
-# every file (useful if you want skills/agents but zero hook activity).
+# An empty list (`[]`) is an explicit allowlist of nothing — end-of-turn
+# verify and lint no-op for every file. SessionStart hooks (telemetry /
+# freshness) still run unless you set session_start_hook / freshness_hook
+# to false.
 # A non-empty list with zero valid apps (typos) falls back to auto-discover
 # with a one-line advisory rather than silently disabling verify forever.
 # Lists may be inline or multi-line YAML:

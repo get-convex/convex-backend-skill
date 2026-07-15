@@ -224,15 +224,24 @@ export function main(payload, overrides = {}) {
   if (gitWorked && touched.length === 0) return ALLOW;
 
   // Attribute each touched convex/*.ts path to its enclosing Convex app and
-  // verify only those app(s). When git is unavailable we cannot attribute, so
-  // fall back to verifying the repo root if it is itself a Convex container.
+  // verify only those app(s). When git is unavailable we cannot attribute by
+  // touched paths; fall back carefully while still honoring convex_apps:
+  //   - allow + empty set ([]) → verify nothing
+  //   - allow + non-empty → only if cwd itself is an allowed app root
+  //   - auto → prior beta behavior: verify cwd when it has convex/
   const allowMode = resolveAllowlistMode(cwd, config, fsDeps);
-  const apps =
-    gitWorked
-      ? resolveAffectedApps(touched, cwd, config, fsDeps)
-      : existsSync(resolve(cwd, "convex"))
-        ? [cwd]
+  let apps;
+  if (gitWorked) {
+    apps = resolveAffectedApps(touched, cwd, config, fsDeps);
+  } else if (allowMode.mode === "allow") {
+    const cwdApp = resolve(cwd);
+    apps =
+      allowMode.set.has(cwdApp) && existsSync(resolve(cwdApp, "convex"))
+        ? [cwdApp]
         : [];
+  } else {
+    apps = existsSync(resolve(cwd, "convex")) ? [cwd] : [];
+  }
   if (apps.length === 0) {
     // Empty intentional allowlist, or nothing attributed. Optional advisory
     // when a non-empty list was all-invalid (we already fell back to auto and

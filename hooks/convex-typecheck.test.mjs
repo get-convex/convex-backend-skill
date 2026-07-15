@@ -795,3 +795,23 @@ test("deep nested convex path is verified (segment resolve)", () => {
     p("apps", "backend-mono"),
   );
 });
+
+test("empty convex_apps + git failure → ALLOW, no verify legs", () => {
+  // Intentional allow-nothing must hold even when we cannot use porcelain
+  // attribution (not a git repo / git status non-zero).
+  const { deps, calls } = makeDeps({
+    files: baseFiles({
+      [CONFIG_PATH]: "---\nconvex_apps: []\n---\n",
+    }),
+    execScript: {
+      git: { status: 128, stderr: "fatal: not a git repository\n" },
+    },
+  });
+  const result = main({ cwd: CWD }, deps);
+  assert.equal(result.exitCode, 0);
+  assert.deepEqual(
+    calls.map((c) => c.tag),
+    ["git"],
+    "empty allowlist must not fall back to verifying cwd",
+  );
+});
