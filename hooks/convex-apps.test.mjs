@@ -86,6 +86,38 @@ test("enclosingConvexDir attributes a nested file to its app container", () => {
   assert.equal(app, p("apps", "backend-mono"));
 });
 
+test("enclosingConvexDir: deep path under convex/ still finds app (convex shortcut)", () => {
+  // Without the basename===convex shortcut, maxDepth=4 would burn hops on
+  // convex/a/b/c/d and never reach the app root. The shortcut jumps from the
+  // `convex` segment to its parent.
+  const deps = fakeFs(monorepoFiles());
+  const deep = p(
+    "apps",
+    "backend-mono",
+    "convex",
+    "a",
+    "b",
+    "c",
+    "d",
+    "e.ts",
+  );
+  const app = enclosingConvexDir(deep, ROOT, deps, 4);
+  assert.equal(app, p("apps", "backend-mono"));
+});
+
+test("enclosingConvexDir: maxDepth still bounds climbs above the app", () => {
+  // A file outside any convex/ tree should not walk the whole filesystem;
+  // with maxDepth=1 from a shallow non-convex path we get null.
+  const deps = fakeFs(monorepoFiles());
+  const app = enclosingConvexDir(
+    p("apps", "web", "src", "page.tsx"),
+    ROOT,
+    deps,
+    1,
+  );
+  assert.equal(app, null);
+});
+
 test("resolveAffectedApps: monorepo hoisted case attributes to the sub-app", () => {
   const deps = fakeFs(monorepoFiles());
   const apps = resolveAffectedApps(

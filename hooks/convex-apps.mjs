@@ -22,7 +22,7 @@
 // All helpers take their fs boundary as `{ existsSync, readFileSync }` so the
 // hook tests can fake it.
 
-import { dirname, resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 
 // Does `dir`'s OWN package.json declare the `convex` package? This is the
 // signal the codegen/dev legs gate on - it is true only where the Convex CLI
@@ -50,9 +50,14 @@ export function isConvexAppRoot(dir, deps) {
 
 // Walk up from a touched/edited file to the nearest ancestor (bounded by
 // `repoRoot` and `maxDepth`) that contains a `convex/` subdirectory. This is
-// the container that codegen/tsc run IN; whether codegen actually runs is
+// the container that codegen/tsc run IN; whether codegen/dev actually run is
 // decided separately by `declaresConvexDependency`, which preserves the
 // long-standing "tsc still runs even without a declared convex dep" behavior.
+//
+// Fast path: once the walk lands on a directory literally named `convex`, its
+// parent is the app root (that parent has a `convex/` child by definition).
+// That keeps deeply nested files under `convex/lib/.../...` resolvable without
+// burning the whole maxDepth budget on intra-convex hops.
 // Returns the directory, or null when none is found within the bound.
 export function enclosingConvexDir(absFilePath, repoRoot, deps, maxDepth) {
   const { existsSync } = deps;
@@ -60,12 +65,20 @@ export function enclosingConvexDir(absFilePath, repoRoot, deps, maxDepth) {
   let depth = 0;
   while (true) {
     if (existsSync(resolve(dir, "convex"))) return dir;
+    // File lives under .../convex/... — parent of the `convex` segment is the
+    // app root (confirm the parent still exposes a convex/ child).
+    if (basename(dir) === "convex") {
+      const parent = dirname(dir);
+      if (parent !== dir && existsSync(resolve(parent, "convex"))) return parent;
+    }
     if (dir === repoRoot) break; // reached the repo root; stop climbing
     const parent = dirname(dir);
     if (parent === dir) break; // filesystem root
+    // Bound parent hops BEFORE moving, so a hop that would exceed maxDepth is
+    // not taken (and we never skip checking a dir we already moved into).
+    if (maxDepth && depth >= maxDepth) break;
     dir = parent;
     depth++;
-    if (maxDepth && depth > maxDepth) break;
   }
   return null;
 }
@@ -78,12 +91,18 @@ function nearestAllowedApp(absFilePath, repoRoot, allowSet, maxDepth) {
   let depth = 0;
   while (true) {
     if (allowSet.has(dir)) return dir;
+    // Same `convex` segment shortcut as enclosingConvexDir: parent of a
+    // directory named `convex` is the natural app root for files under it.
+    if (basename(dir) === "convex") {
+      const parent = dirname(dir);
+      if (allowSet.has(parent)) return parent;
+    }
     if (dir === repoRoot) break;
     const parent = dirname(dir);
     if (parent === dir) break;
+    if (maxDepth && depth >= maxDepth) break;
     dir = parent;
     depth++;
-    if (maxDepth && depth > maxDepth) break;
   }
   return null;
 }

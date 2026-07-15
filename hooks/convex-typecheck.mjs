@@ -23,9 +23,9 @@
 //   conversational turns).
 // - Monorepo-aware: each touched convex/*.ts path is attributed to its nearest
 //   enclosing Convex app (a dir with a convex/ subdir), and codegen/tsc/dev run
-//   IN that app dir. codegen/dev run only where the app's OWN package.json
-//   declares convex, so a hoisted node_modules/convex can no longer trigger a
-//   spurious "add convex to package.json" block.
+//   IN that app dir. Both codegen AND dev --once run only where the app's OWN
+//   package.json declares convex, so a hoisted node_modules/convex can no
+//   longer trigger a spurious "add convex to package.json" block.
 // - Hard consent line: the `convex dev --once` leg runs ONLY when .env.local
 //   already exists AND already contains CONVEX_DEPLOYMENT. This hook must
 //   NEVER create or start a new Convex deployment/project as a side effect —
@@ -36,7 +36,8 @@
 // - Blocks (exit 2) only on REAL failures: a non-zero `convex codegen`, tsc
 //   output containing `error TS\d+`, or a non-zero `convex dev --once`.
 //   Missing binaries (`npx --no-install` refusing to run), warnings, and
-//   timeouts never block. Never triggers a network fetch for tooling.
+//   timeouts never block. Never triggers a network fetch for tooling. Block
+//   messages name the app dir so multi-app monorepos are debuggable.
 // - `main()` is exported with injectable exec/fs/clock so the test suite can
 //   fake the process boundary; the CLI entrypoint wires the real ones.
 
@@ -45,7 +46,7 @@ import {
   existsSync as realExistsSync,
   readFileSync as realReadFileSync,
 } from "node:fs";
-import { resolve } from "node:path";
+import { relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { capture as realCapture } from "./analytics.mjs";
 import { hookEnabled, loadConvexPluginConfig } from "./config.mjs";
@@ -184,20 +185,32 @@ export function main(payload, overrides = {}) {
         : [];
   if (apps.length === 0) return ALLOW;
 
-  const block = (leg, output) => {
+  // Prefer a path relative to the hook cwd so multi-app block reports are
+  // short and readable; fall back to the absolute app dir.
+  const appLabel = (app) => {
+    const rel = relative(cwd, app);
+    if (!rel || rel === "") return ".";
+    // path.relative can yield ".." paths when app is outside cwd; keep abs then.
+    if (rel.startsWith("..")) return app;
+    return rel;
+  };
+
+  const block = (leg, output, app) => {
     const report = tail(output.trim() || `(no output; ${leg} exited non-zero)`);
+    const where = appLabel(app);
     // Fire-and-forget telemetry on the block path only; never let it break
     // the hook.
     try {
-      capture("stop_verify_blocked", { leg });
+      capture("stop_verify_blocked", { leg, app: where });
     } catch {
       // telemetry must never affect the verify report
     }
     return {
       exitCode: 2,
       stderr:
-        `convex plugin: end-of-turn verify failed at \`${leg}\` — fix these ` +
-        `errors before finishing the turn:\n${report}\n`,
+        `convex plugin: end-of-turn verify failed at \`${leg}\` ` +
+        `(app: ${where}) — fix these errors before finishing the turn:\n` +
+        `${report}\n`,
     };
   };
 
@@ -205,16 +218,19 @@ export function main(payload, overrides = {}) {
   // convex and the local .bin/tsconfig resolve). Legs share the one overall
   // budget across all apps.
   for (const app of apps) {
+    // codegen + dev --once only where the app's OWN package.json declares
+    // convex. That is the fix for the hoisted node_modules/convex false
+    // positive: the CLI only works (and is only invoked) where the dep is
+    // declared. tsc still runs in any touched convex/ container.
+    const canRunConvexCli = declaresConvexDependency(app, fsDeps);
+
     // --- Leg A: `convex codegen` (only where the app declares convex). ------
-    // Gating on the app's OWN package.json is the fix for the hoisted
-    // node_modules/convex false positive: codegen only runs where the CLI
-    // will actually work.
-    if (remaining() > 0 && declaresConvexDependency(app, fsDeps)) {
+    if (remaining() > 0 && canRunConvexCli) {
       const { file, args } = resolveBin(app, "convex", ["codegen"], existsSync);
       const r = exec(file, args, { cwd: app, timeout: remaining() });
       if (r.timedOut) return ALLOW; // budget valve: never wedge the session
       if (!isMissingBinary(r) && r.status !== 0) {
-        return block("convex codegen", `${r.stdout}${r.stderr}`);
+        return block("convex codegen", `${r.stdout}${r.stderr}`, app);
       }
     }
 
@@ -235,16 +251,18 @@ export function main(payload, overrides = {}) {
         // Block ONLY on real tsc diagnostics; a missing tsc, warnings, or
         // other non-error output must not block the agent.
         if (r.status !== 0 && /error TS\d+/.test(out)) {
-          return block("tsc --noEmit", out);
+          return block("tsc --noEmit", out, app);
         }
       }
     }
 
-    // --- Leg C: `convex dev --once` (consent-gated). ------------------------
-    // HARD CONSENT LINE: only against an ALREADY-provisioned deployment.
-    // .env.local must already exist and already name a CONVEX_DEPLOYMENT;
-    // otherwise skip silently — never create/start a deployment from a hook.
-    if (remaining() > 0) {
+    // --- Leg C: `convex dev --once` (declared-dep + consent-gated). ---------
+    // Same declaresConvexDependency gate as codegen (never run the CLI where
+    // package.json doesn't declare convex). HARD CONSENT LINE: only against
+    // an ALREADY-provisioned deployment — .env.local must already exist and
+    // already name a CONVEX_DEPLOYMENT; otherwise skip silently — never
+    // create/start a deployment from a hook.
+    if (remaining() > 0 && canRunConvexCli) {
       let envLocal = null;
       try {
         envLocal = readFileSync(resolve(app, ".env.local"), "utf8");
@@ -265,7 +283,7 @@ export function main(payload, overrides = {}) {
         });
         if (r.timedOut) return ALLOW;
         if (!isMissingBinary(r) && r.status !== 0) {
-          return block("convex dev --once", `${r.stdout}${r.stderr}`);
+          return block("convex dev --once", `${r.stdout}${r.stderr}`, app);
         }
       }
     }

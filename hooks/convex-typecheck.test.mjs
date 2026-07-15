@@ -296,6 +296,7 @@ test("codegen failure blocks: exit 2 with the error tail", () => {
   const result = main({ cwd: CWD }, deps);
   assert.equal(result.exitCode, 2);
   assert.match(result.stderr, /convex codegen/);
+  assert.match(result.stderr, /\(app: \.\)/);
   assert.match(result.stderr, /schema\.ts is invalid/);
 });
 
@@ -314,6 +315,7 @@ test("real tsc diagnostics block: exit 2 with the error tail", () => {
   const result = main({ cwd: CWD }, deps);
   assert.equal(result.exitCode, 2);
   assert.match(result.stderr, /error TS2322/);
+  assert.match(result.stderr, /\(app: \.\)/);
 });
 
 test("tsc non-zero WITHOUT real diagnostics does not block (warnings discipline)", () => {
@@ -344,6 +346,7 @@ test("dev --once failure blocks: exit 2 with the error tail", () => {
   const result = main({ cwd: CWD }, deps);
   assert.equal(result.exitCode, 2);
   assert.match(result.stderr, /convex dev --once/);
+  assert.match(result.stderr, /\(app: \.\)/);
   assert.match(result.stderr, /index name invalid/);
 });
 
@@ -586,4 +589,58 @@ test("hoisted node_modules/convex at root does NOT trigger a codegen block", () 
     "codegen must NOT run where package.json does not declare convex",
   );
   assert.deepEqual(calls.map((c) => c.tag), ["git", "tsc"]);
+});
+
+test("hoisted root with .env.local does NOT run dev --once either", () => {
+  // Same false-positive shape as codegen: without a declared convex dep,
+  // consent-gated dev --once must also stay off (otherwise the CLI errors
+  // with "add convex to package.json" and blocks the turn).
+  const files = {
+    [p("node_modules")]: true,
+    [p("node_modules", "convex", "package.json")]: CONVEX_PKG,
+    [p("node_modules", ".bin", "convex")]: true,
+    [p("convex")]: true,
+    [p("package.json")]: PLAIN_PKG,
+    [p("convex", "tsconfig.json")]: "{}",
+    [p("node_modules", ".bin", "tsc")]: true,
+    [p(".env.local")]: "CONVEX_DEPLOYMENT=dev:happy-otter-123\n",
+  };
+  const { deps, calls } = makeDeps({
+    files,
+    execScript: gitTouching("convex/foo.ts"),
+  });
+  const result = main({ cwd: CWD }, deps);
+  assert.equal(result.exitCode, 0, "must not block");
+  assert.ok(
+    !calls.some((c) => c.tag === "codegen"),
+    "codegen must stay off",
+  );
+  assert.ok(
+    !calls.some((c) => c.tag === "dev"),
+    "dev --once must stay off when package.json does not declare convex",
+  );
+  assert.deepEqual(calls.map((c) => c.tag), ["git", "tsc"]);
+});
+
+test("block message names the sub-app on multi-app failure", () => {
+  const files = {
+    [p("node_modules")]: true,
+    ...appFiles("apps/backend-mono"),
+    ...appFiles("apps/other"),
+  };
+  const { deps } = makeDeps({
+    files,
+    execScript: {
+      ...gitTouching("apps/backend-mono/convex/foo.ts"),
+      codegen: {
+        status: 1,
+        stderr: "✖ Error: Unable to generate code:\nschema.ts is invalid\n",
+      },
+    },
+  });
+  const result = main({ cwd: CWD }, deps);
+  assert.equal(result.exitCode, 2);
+  assert.match(result.stderr, /convex codegen/);
+  assert.match(result.stderr, /\(app: apps[/\\]backend-mono\)/);
+  assert.match(result.stderr, /schema\.ts is invalid/);
 });

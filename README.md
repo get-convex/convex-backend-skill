@@ -109,10 +109,15 @@ session_start_hook: true   # SessionStart anonymous telemetry
 # Monorepo: explicit Convex app roots, relative to the repo root. When set,
 # only these apps are verified/linted. When omitted, apps are auto-discovered
 # by attributing each touched file to its nearest enclosing Convex app.
+# An empty list (`[]`) is an explicit allowlist of nothing — hooks no-op for
+# every file (useful if you want skills/agents but zero hook activity).
 convex_apps: ["apps/backend-mono"]
 
-# Optional: how far the resolver walks up from a touched file to find its app
-# root (default: 4).
+# Optional: max parent hops when walking up from a touched file to find its
+# app root (default: 4). Files under `convex/` still resolve correctly even
+# when nested deeply inside that tree (the walker short-circuits at the
+# `convex` path segment). Raise this only if app roots themselves sit unusually
+# deep relative to the repo root (e.g. many monorepo nesting levels).
 discovery_max_depth: 4
 ---
 
@@ -126,9 +131,12 @@ Behavior details:
   `package.json` declaring `convex` (in `dependencies`, `devDependencies`, or
   `peerDependencies`). A hoisted `node_modules/convex` alone does **not** make a
   directory an app; that hoisting was the source of spurious "add `convex` to
-  your package.json dependencies" blocks at the repo root, now fixed.
+  your package.json dependencies" blocks at the repo root, now fixed. Both
+  `convex codegen` and `convex dev --once` run only where that declared-dep
+  rule holds; `tsc --noEmit` still runs in any touched `convex/` container.
 - **Multiple apps.** Only the app(s) whose files a turn actually touched are
-  verified, each in its own directory.
+  verified, each in its own directory. Block messages name the failing app
+  (e.g. `(app: apps/backend-mono)`).
 - **Fail-safe.** A missing, unreadable, or malformed settings file falls back to
   the defaults (all hooks on, auto-discover). A broken file never disables a
   hook and never blocks a turn.
