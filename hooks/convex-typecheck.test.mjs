@@ -426,3 +426,164 @@ test("stop_hook_active short-circuits before any exec (injected seam)", () => {
   assert.equal(result.exitCode, 0);
   assert.equal(calls.length, 0, "loop guard must run before any child process");
 });
+
+// --- Layer 3: monorepo / multi-app + per-project settings -------------------
+
+const CONVEX_PKG = JSON.stringify({ dependencies: { convex: "^1.0.0" } });
+const PLAIN_PKG = JSON.stringify({ dependencies: { react: "^18.0.0" } });
+const CONFIG_PATH = p(".claude", "convex.local.md");
+
+// A Convex app living in a subdirectory, with its own package.json + local
+// bins + convex/tsconfig.json.
+function appFiles(appRel, extra = {}) {
+  return {
+    [p(appRel, "convex")]: true,
+    [p(appRel, "package.json")]: CONVEX_PKG,
+    [p(appRel, "node_modules", ".bin", "convex")]: true,
+    [p(appRel, "node_modules", ".bin", "tsc")]: true,
+    [p(appRel, "convex", "tsconfig.json")]: "{}",
+    ...extra,
+  };
+}
+
+const gitTouching = (...paths) => ({
+  git: { status: 0, stdout: paths.map((rel) => ` M ${rel}\n`).join("") },
+});
+
+test("monorepo: codegen runs IN the sub-app, never the hoisted root", () => {
+  const files = {
+    // Root hoists node_modules (+ convex) but does not declare convex itself.
+    [p("node_modules")]: true,
+    [p("node_modules", "convex", "package.json")]: CONVEX_PKG,
+    [p("package.json")]: PLAIN_PKG,
+    ...appFiles("apps/backend-mono"),
+  };
+  const { deps, calls } = makeDeps({
+    files,
+    execScript: gitTouching("apps/backend-mono/convex/foo.ts"),
+  });
+  const result = main({ cwd: CWD }, deps);
+  assert.equal(result.exitCode, 0);
+  assert.deepEqual(
+    calls.map((c) => c.tag),
+    ["git", "codegen", "tsc"],
+  );
+  const appDir = p("apps", "backend-mono");
+  assert.equal(calls[1].opts.cwd, appDir, "codegen runs in the app dir");
+  assert.equal(calls[2].opts.cwd, appDir, "tsc runs in the app dir");
+});
+
+test("monorepo: a non-convex turn allows without running any leg", () => {
+  const files = {
+    [p("node_modules")]: true,
+    [p("node_modules", "convex", "package.json")]: CONVEX_PKG,
+    [p("package.json")]: PLAIN_PKG,
+    ...appFiles("apps/backend-mono"),
+  };
+  const { deps, calls } = makeDeps({
+    files,
+    execScript: gitTouching("apps/web/src/page.tsx"),
+  });
+  const result = main({ cwd: CWD }, deps);
+  assert.equal(result.exitCode, 0);
+  assert.deepEqual(calls.map((c) => c.tag), ["git"]);
+});
+
+test("multiple convex apps: only the touched app is verified", () => {
+  const files = {
+    [p("node_modules")]: true,
+    ...appFiles("apps/a"),
+    ...appFiles("apps/b"),
+  };
+  const { deps, calls } = makeDeps({
+    files,
+    execScript: gitTouching("apps/a/convex/x.ts"),
+  });
+  const result = main({ cwd: CWD }, deps);
+  assert.equal(result.exitCode, 0);
+  assert.deepEqual(
+    calls.map((c) => c.tag),
+    ["git", "codegen", "tsc"],
+  );
+  assert.equal(calls[1].opts.cwd, p("apps", "a"));
+  assert.ok(
+    !calls.some((c) => c.opts.cwd === p("apps", "b")),
+    "the untouched app must not be verified",
+  );
+});
+
+test("typecheck_hook: false → ALLOW before any exec (git included)", () => {
+  const { deps, calls } = makeDeps({
+    files: baseFiles({ [CONFIG_PATH]: "---\ntypecheck_hook: false\n---\n" }),
+    execScript: DIRTY_GIT,
+  });
+  const result = main({ cwd: CWD }, deps);
+  assert.equal(result.exitCode, 0);
+  assert.equal(calls.length, 0, "a disabled hook runs nothing at all");
+});
+
+test("explicit convex_apps: only listed apps verified, others ignored", () => {
+  const files = {
+    [p("node_modules")]: true,
+    ...appFiles("apps/backend-mono"),
+    ...appFiles("apps/other"),
+    // apps/ghost is listed but does not exist; must be dropped safely.
+    [CONFIG_PATH]:
+      '---\nconvex_apps: ["apps/backend-mono", "apps/ghost"]\n---\n',
+  };
+  const { deps, calls } = makeDeps({
+    files,
+    execScript: gitTouching(
+      "apps/backend-mono/convex/foo.ts",
+      "apps/other/convex/bar.ts",
+    ),
+  });
+  const result = main({ cwd: CWD }, deps);
+  assert.equal(result.exitCode, 0);
+  assert.equal(calls[1].opts.cwd, p("apps", "backend-mono"));
+  assert.ok(
+    !calls.some((c) => c.opts.cwd === p("apps", "other")),
+    "an app outside the explicit list must not be verified",
+  );
+});
+
+test("malformed .claude/convex.local.md → defaults, verify still runs", () => {
+  const { deps, calls } = makeDeps({
+    files: baseFiles({ [CONFIG_PATH]: "not frontmatter at all\n" }),
+    execScript: DIRTY_GIT,
+  });
+  const result = main({ cwd: CWD }, deps);
+  assert.equal(result.exitCode, 0);
+  assert.deepEqual(
+    calls.map((c) => c.tag),
+    ["git", "codegen", "tsc"],
+    "a broken config must not disable the hook",
+  );
+});
+
+test("hoisted node_modules/convex at root does NOT trigger a codegen block", () => {
+  // The exact current failing case: a convex/ dir at the hoisted root plus a
+  // hoisted node_modules/convex, but the root package.json does not declare
+  // convex. Old code ran codegen at the root and the CLI errored ("add convex
+  // to package.json"), blocking the turn. Now codegen is gated off; only tsc
+  // (harmless) runs.
+  const files = {
+    [p("node_modules")]: true,
+    [p("node_modules", "convex", "package.json")]: CONVEX_PKG,
+    [p("convex")]: true,
+    [p("package.json")]: PLAIN_PKG,
+    [p("convex", "tsconfig.json")]: "{}",
+    [p("node_modules", ".bin", "tsc")]: true,
+  };
+  const { deps, calls } = makeDeps({
+    files,
+    execScript: gitTouching("convex/foo.ts"),
+  });
+  const result = main({ cwd: CWD }, deps);
+  assert.equal(result.exitCode, 0, "must not block");
+  assert.ok(
+    !calls.some((c) => c.tag === "codegen"),
+    "codegen must NOT run where package.json does not declare convex",
+  );
+  assert.deepEqual(calls.map((c) => c.tag), ["git", "tsc"]);
+});

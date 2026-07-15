@@ -1302,3 +1302,68 @@ test("no-op path (non-convex file) completes in well under 200ms", () => {
     `no-op path should be fast (<200ms), took ${elapsedMs.toFixed(1)}ms`,
   );
 });
+
+// --- Per-project settings (.claude/convex.local.md) -----------------------
+
+const BAD_IMPORT = `import { query } from "convex/server";\n`;
+
+// A Write payload with an explicit cwd (repo root), so the hook reads
+// `<cwd>/.claude/convex.local.md`.
+function writePayloadInRepo(repoRoot, filePath, content) {
+  return {
+    tool_name: "Write",
+    tool_input: { file_path: filePath, content },
+    cwd: repoRoot,
+  };
+}
+
+function writeConfig(repoRoot, frontmatter) {
+  mkdirSync(join(repoRoot, ".claude"), { recursive: true });
+  writeFileSync(join(repoRoot, ".claude", "convex.local.md"), frontmatter);
+}
+
+test("lint_hook: false → a normally-denied write is allowed silently", () => {
+  const repo = mkdtempSync(join(tmpdir(), "cvx-lint-off-"));
+  try {
+    writeConfig(repo, "---\nlint_hook: false\n---\n");
+    const result = runHook(
+      writePayloadInRepo(repo, join(repo, "convex", "foo.ts"), BAD_IMPORT),
+    );
+    assertAllowedSilent(result);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test("explicit convex_apps: a file outside every listed app is skipped", () => {
+  const repo = mkdtempSync(join(tmpdir(), "cvx-lint-scope-"));
+  try {
+    writeConfig(repo, '---\nconvex_apps: ["apps/backend-mono"]\n---\n');
+    // Root-level convex/ file is NOT under apps/backend-mono → skipped.
+    const result = runHook(
+      writePayloadInRepo(repo, join(repo, "convex", "foo.ts"), BAD_IMPORT),
+    );
+    assertAllowedSilent(result);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test("explicit convex_apps: a file INSIDE a listed app is still linted", () => {
+  const repo = mkdtempSync(join(tmpdir(), "cvx-lint-in-"));
+  try {
+    writeConfig(repo, '---\nconvex_apps: ["apps/backend-mono"]\n---\n');
+    const app = join(repo, "apps", "backend-mono");
+    mkdirSync(join(app, "convex"), { recursive: true });
+    writeFileSync(
+      join(app, "package.json"),
+      JSON.stringify({ dependencies: { convex: "^1.0.0" } }),
+    );
+    const result = runHook(
+      writePayloadInRepo(repo, join(app, "convex", "foo.ts"), BAD_IMPORT),
+    );
+    assertDenied(result, "convex/server import");
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
