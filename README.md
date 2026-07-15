@@ -81,11 +81,60 @@ Claude will pick the right Convex primitive or component, scaffold the schema, w
 | **`quickstart` skill** (`/quickstart`) | Idea → running app in under a minute. Scaffolds a Next.js + shadcn "wow-shell" with a floating Chef panel (live progress feed, pulsing todo checklist, inline refinement questions, feature-request form), starts `convex dev` + `next dev` with error watchers armed, opens the browser, then builds the idea live. Hands `convex/` code to `convex-expert`. |
 | **`convex-expert` subagent** | Deep code-writing rules — object-form syntax, validator requirements, index naming, internal-vs-public, schema evolution, resource limits, component reflexes. Loaded only when delegated to, so the rules don't burn main-thread context. |
 | **Convex MCP server** | Live deployment introspection — `tables`, `function-spec`, `data`, `run-once-query`, `logs`, `env list/set/get`. Auto-wires via `npx convex mcp start` when the plugin is enabled. |
-| **Lint-on-save hook** | PreToolUse gate that blocks Convex anti-patterns *before they reach disk* (and before `convex dev` can push them): `.filter(q => q.field(...))` on db queries and old positional function syntax are denied with the correct pattern in the message; missing `args`/`returns` validators surface as advisories. |
-| **End-of-turn verify hook** | Stop hook that enforces the "self-verify before you stop" rule: when a turn leaves uncommitted `convex/*.ts` changes, it runs `convex codegen`, `tsc --noEmit`, and — only when `.env.local` already names a `CONVEX_DEPLOYMENT` (never provisions one) — `convex dev --once`. Real errors block the stop (exit 2) so the agent fixes them before finishing; loop-guarded via `stop_hook_active`, with a hard ~90s budget that allows rather than wedges on timeout. |
+| **Lint-on-save hook** | PreToolUse gate that blocks Convex anti-patterns *before they reach disk* (and before `convex dev` can push them): `.filter(q => q.field(...))` on db queries and old positional function syntax are denied with the correct pattern in the message; missing `args`/`returns` validators surface as advisories. Monorepo-aware and toggleable via `.claude/convex.local.md` (see [Configuration](#configuration)). |
+| **End-of-turn verify hook** | Stop hook that enforces the "self-verify before you stop" rule: when a turn leaves uncommitted `convex/*.ts` changes, it runs `convex codegen`, `tsc --noEmit`, and (only when `.env.local` already names a `CONVEX_DEPLOYMENT`, never provisions one) `convex dev --once`. Each touched `convex/*.ts` path is attributed to its enclosing Convex app and verified IN that app's directory, so backends in subdirectories and multi-app monorepos work; `codegen`/`dev` run only where the app's own `package.json` declares `convex`. Real errors block the stop (exit 2) so the agent fixes them before finishing; loop-guarded via `stop_hook_active`, with a hard ~90s budget that allows rather than wedges on timeout. Toggleable via `.claude/convex.local.md` (see [Configuration](#configuration)). |
 | **Runtime-error monitor** | Streams `npx convex logs` and surfaces matched errors (TS / schema validation / runtime exceptions / OCC conflicts) as Claude notifications, so you find out about server-side failures the moment they happen. Self-guards on unlinked projects. |
 | **OCC / insights monitor** | Polls `npx convex insights` every 10 minutes and notifies only on *new* OCC conflicts or read-limit insights, with the fix playbook (shrink transactions, `@convex-dev/aggregate` for hot counters, `.withIndex()`/`.paginate()` for read limits). Cloud deployments with user-level auth only; silent otherwise. |
 | **Feature-request monitor** | During a `quickstart` build, watches the Chef panel's `featureRequests:listPending` and pushes a notification the moment the user submits a new request — even across turns — so the agent picks it up without babysitting a log. Notifies only on *new* requests; works on local/anonymous deployments too. |
+
+## Configuration
+
+The hooks work with zero configuration: in a single Convex app at the repo root
+they behave exactly as described above. For monorepos, multi-app repos, or to
+turn individual hooks off, drop an **optional** settings file at
+`.claude/convex.local.md` in your repo root. It is read at runtime on every hook
+run, so edits take effect immediately (no session restart or plugin reinstall).
+
+The file is a Markdown file with a small YAML frontmatter block; every key is
+optional:
+
+```markdown
+---
+# Per-hook on/off switches (default: true = enabled)
+typecheck_hook: true       # Stop-mode end-of-turn verify
+lint_hook: true            # PreToolUse lint-on-save
+freshness_hook: true       # SessionStart upgrade nudge
+session_start_hook: true   # SessionStart anonymous telemetry
+
+# Monorepo: explicit Convex app roots, relative to the repo root. When set,
+# only these apps are verified/linted. When omitted, apps are auto-discovered
+# by attributing each touched file to its nearest enclosing Convex app.
+convex_apps: ["apps/backend-mono"]
+
+# Optional: how far the resolver walks up from a touched file to find its app
+# root (default: 4).
+discovery_max_depth: 4
+---
+
+Any prose below the frontmatter is ignored by the hooks; use it for notes.
+```
+
+Behavior details:
+
+- **Monorepo / subdirectory backends.** A directory counts as a genuine Convex
+  app only when it has both a `convex/` subdirectory *and* its own
+  `package.json` declaring `convex` (in `dependencies`, `devDependencies`, or
+  `peerDependencies`). A hoisted `node_modules/convex` alone does **not** make a
+  directory an app; that hoisting was the source of spurious "add `convex` to
+  your package.json dependencies" blocks at the repo root, now fixed.
+- **Multiple apps.** Only the app(s) whose files a turn actually touched are
+  verified, each in its own directory.
+- **Fail-safe.** A missing, unreadable, or malformed settings file falls back to
+  the defaults (all hooks on, auto-discover). A broken file never disables a
+  hook and never blocks a turn.
+- **Gitignored.** `.claude/convex.local.md` is a per-developer/per-checkout
+  setting; keep it out of version control (this repo's `.gitignore` already
+  excludes `.claude/*.local.md`).
 
 ## Capabilities
 
