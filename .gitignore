@@ -1,0 +1,3 @@
+# Per-developer / per-checkout plugin settings, read at runtime by the hooks
+# (see README "Configuration"). Not shared via version control.
+.claude/*.local.md
