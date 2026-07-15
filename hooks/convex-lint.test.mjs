@@ -1338,6 +1338,14 @@ test("lint_hook: false → a normally-denied write is allowed silently", () => {
 test("explicit convex_apps: a file outside every listed app is skipped", () => {
   const repo = mkdtempSync(join(tmpdir(), "cvx-lint-scope-"));
   try {
+    // Listed app must be a real Convex app root so the allowlist is valid
+    // (all-invalid lists fall back to auto-discover).
+    const app = join(repo, "apps", "backend-mono");
+    mkdirSync(join(app, "convex"), { recursive: true });
+    writeFileSync(
+      join(app, "package.json"),
+      JSON.stringify({ dependencies: { convex: "^1.0.0" } }),
+    );
     writeConfig(repo, '---\nconvex_apps: ["apps/backend-mono"]\n---\n');
     // Root-level convex/ file is NOT under apps/backend-mono → skipped.
     const result = runHook(

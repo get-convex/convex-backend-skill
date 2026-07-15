@@ -6,8 +6,9 @@
 //
 // The file carries a small YAML-style frontmatter block; only the handful of
 // keys below are read. This module intentionally ships NO YAML dependency (the
-// plugin is Node-stdlib only), so it parses just the flat `key: value` lines it
-// needs. Anything it can't understand is ignored.
+// plugin is Node-stdlib only), so it parses the flat keys + the list shapes
+// it needs (inline `[a, b]` and multi-line `- item`). Anything it can't
+// understand is ignored.
 //
 // Design notes:
 // - Pure and injectable: `loadConvexPluginConfig(repoRoot, { existsSync,
@@ -29,8 +30,8 @@ const HOOK_TOGGLE_KEYS = [
 ];
 
 // Default upper bound on how far the app resolver walks when attributing a
-// touched file to its enclosing Convex app root. Small on purpose: real apps
-// sit shallow, and a tight bound keeps the walk cheap.
+// touched file that is NOT under a `convex/` path segment. Paths under
+// `.../convex/...` resolve via the segment itself and do not use this budget.
 const DEFAULT_DISCOVERY_MAX_DEPTH = 4;
 
 // The full default config, applied whenever the settings file is absent or a
@@ -47,15 +48,38 @@ function defaults() {
   };
 }
 
-// Parse a single scalar frontmatter value into boolean | number | string.
-// Arrays are handled separately by the caller.
-function parseScalar(raw) {
-  if (raw === "true") return true;
-  if (raw === "false") return false;
-  if (/^-?\d+$/.test(raw)) return parseInt(raw, 10);
-  // Strip a single layer of matching quotes if present.
+// Strip one layer of matching single/double quotes.
+function unquote(raw) {
   const m = /^"([^"]*)"$/.exec(raw) ?? /^'([^']*)'$/.exec(raw);
   return m ? m[1] : raw;
+}
+
+// Drop a trailing `# comment` only when `#` is outside quotes, so values like
+// `path: "foo # bar"` are preserved.
+function stripTrailingComment(line) {
+  let inSingle = false;
+  let inDouble = false;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (c === '"' && !inSingle) inDouble = !inDouble;
+    else if (c === "'" && !inDouble) inSingle = !inSingle;
+    else if (c === "#" && !inSingle && !inDouble) {
+      if (i === 0 || /\s/.test(line[i - 1])) return line.slice(0, i);
+    }
+  }
+  return line;
+}
+
+// Parse a single scalar frontmatter value into boolean | number | string.
+// Quotes are stripped BEFORE boolean/int recognition so `"false"` and `'6'`
+// work like unquoted forms. Also accepts True/False/yes/no/on/off.
+function parseScalar(raw) {
+  const u = unquote(String(raw).trim());
+  const lower = u.toLowerCase();
+  if (lower === "true" || lower === "yes" || lower === "on") return true;
+  if (lower === "false" || lower === "no" || lower === "off") return false;
+  if (/^-?\d+$/.test(u)) return parseInt(u, 10);
+  return u;
 }
 
 // Parse an inline `[a, b, "c"]` list into an array of strings. Returns null
@@ -67,18 +91,19 @@ function parseInlineList(raw) {
   if (!inner) return [];
   return inner
     .split(",")
-    .map((part) => {
-      const t = part.trim();
-      const q = /^"([^"]*)"$/.exec(t) ?? /^'([^']*)'$/.exec(t);
-      return q ? q[1] : t;
-    })
+    .map((part) => unquote(part.trim()))
     .filter((s) => s.length > 0);
 }
 
 // Minimal frontmatter reader: pulls the block delimited by the first two `---`
-// lines and returns a flat { key: value } map. Only flat `key: value` lines are
-// understood; nested structures and multi-line values are ignored. Never
-// throws.
+// lines and returns a flat { key: value } map. Supports:
+// - flat `key: value` scalars
+// - inline lists `key: [a, b]`
+// - multi-line lists:
+//     key:
+//       - a
+//       - b
+// Never throws.
 export function parseFrontmatter(text) {
   const out = {};
   if (typeof text !== "string") return out;
@@ -91,15 +116,41 @@ export function parseFrontmatter(text) {
   for (; i < lines.length; i++) {
     const line = lines[i];
     if (line.trim() === "---") break; // end of frontmatter
-    // Drop a trailing `# comment`, and skip whole-line comments / blanks.
-    const withoutComment = line.replace(/\s+#.*$/, "");
+    const withoutComment = stripTrailingComment(line);
     const trimmed = withoutComment.trim();
     if (!trimmed || trimmed.startsWith("#")) continue;
+
+    // Multi-line list continuation is handled when we see `key:` with empty
+    // value; standalone `- item` lines without a preceding key are ignored.
     const colon = trimmed.indexOf(":");
     if (colon === -1) continue;
     const key = trimmed.slice(0, colon).trim();
     const rawValue = trimmed.slice(colon + 1).trim();
     if (!key) continue;
+
+    if (!rawValue) {
+      // Multi-line list: following indented `- item` lines.
+      const items = [];
+      let j = i + 1;
+      for (; j < lines.length; j++) {
+        if (lines[j].trim() === "---") break;
+        const itemLine = stripTrailingComment(lines[j]);
+        const itemTrim = itemLine.trim();
+        if (!itemTrim || itemTrim.startsWith("#")) continue;
+        const itemMatch = /^-\s+(.*)$/.exec(itemTrim);
+        if (!itemMatch) break;
+        const item = unquote(itemMatch[1].trim());
+        if (item.length > 0) items.push(item);
+      }
+      if (items.length > 0) {
+        out[key] = items;
+        i = j - 1;
+        continue;
+      }
+      // Empty value with no list items — leave unset (defaults apply).
+      continue;
+    }
+
     const list = parseInlineList(rawValue);
     out[key] = list !== null ? list : parseScalar(rawValue);
   }
@@ -126,6 +177,12 @@ export function loadConvexPluginConfig(
         (a) => typeof a === "string" && a.length > 0,
       );
       config.convex_apps = apps; // may be [] - an explicit empty allowlist
+    } else if (
+      typeof parsed.convex_apps === "string" &&
+      parsed.convex_apps.length > 0
+    ) {
+      // Bare scalar `convex_apps: apps/backend-mono` → single-entry list.
+      config.convex_apps = [parsed.convex_apps];
     }
     if (
       Number.isInteger(parsed.discovery_max_depth) &&

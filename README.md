@@ -111,35 +111,46 @@ session_start_hook: true   # SessionStart anonymous telemetry
 # by attributing each touched file to its nearest enclosing Convex app.
 # An empty list (`[]`) is an explicit allowlist of nothing — hooks no-op for
 # every file (useful if you want skills/agents but zero hook activity).
+# A non-empty list with zero valid apps (typos) falls back to auto-discover
+# with a one-line advisory rather than silently disabling verify forever.
+# Lists may be inline or multi-line YAML:
+#   convex_apps:
+#     - apps/backend-mono
 convex_apps: ["apps/backend-mono"]
 
-# Optional: max parent hops when walking up from a touched file to find its
-# app root (default: 4). Files under `convex/` still resolve correctly even
-# when nested deeply inside that tree (the walker short-circuits at the
-# `convex` path segment). Raise this only if app roots themselves sit unusually
-# deep relative to the repo root (e.g. many monorepo nesting levels).
+# Optional: max parent hops for paths that are NOT under a `convex/` segment
+# (default: 4). Files under `.../convex/...` resolve via the `convex` path
+# segment itself and never consume this budget — deep trees like
+# `convex/domains/foo/bar/baz/qux/item.ts` always attribute correctly.
 discovery_max_depth: 4
 ---
 
 Any prose below the frontmatter is ignored by the hooks; use it for notes.
 ```
 
+Booleans accept `true`/`false`, quoted forms (`"false"`), and common YAML-ish
+aliases (`True`/`False`, `yes`/`no`, `on`/`off`).
+
 Behavior details:
 
 - **Monorepo / subdirectory backends.** A directory counts as a genuine Convex
   app only when it has both a `convex/` subdirectory *and* its own
-  `package.json` declaring `convex` (in `dependencies`, `devDependencies`, or
-  `peerDependencies`). A hoisted `node_modules/convex` alone does **not** make a
-  directory an app; that hoisting was the source of spurious "add `convex` to
-  your package.json dependencies" blocks at the repo root, now fixed. Both
-  `convex codegen` and `convex dev --once` run only where that declared-dep
-  rule holds; `tsc --noEmit` still runs in any touched `convex/` container.
+  `package.json` declaring `convex` (in `dependencies`, `devDependencies`,
+  `peerDependencies`, or `optionalDependencies`). A hoisted `node_modules/convex`
+  alone does **not** make a directory an app; that hoisting was the source of
+  spurious "add `convex` to your package.json dependencies" blocks at the repo
+  root, now fixed. Both `convex codegen` and `convex dev --once` run only where
+  that declared-dep rule holds; `tsc --noEmit` still runs in any touched
+  `convex/` container. Tooling may live in a parent `node_modules` (package-root
+  checkouts in hoisted monorepos are supported).
 - **Multiple apps.** Only the app(s) whose files a turn actually touched are
-  verified, each in its own directory. Block messages name the failing app
-  (e.g. `(app: apps/backend-mono)`).
+  verified, each in its own directory. The ~90s budget is sliced per app so one
+  slow app cannot starve others; failures are aggregated across apps. Block
+  messages name the failing app (e.g. `(app: apps/backend-mono)`).
 - **Fail-safe.** A missing, unreadable, or malformed settings file falls back to
   the defaults (all hooks on, auto-discover). A broken file never disables a
-  hook and never blocks a turn.
+  hook and never blocks a turn. Timeouts and indeterminate child exits allow
+  rather than block.
 - **Gitignored.** `.claude/convex.local.md` is a per-developer/per-checkout
   setting; keep it out of version control (this repo's `.gitignore` already
   excludes `.claude/*.local.md`).

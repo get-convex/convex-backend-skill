@@ -644,3 +644,154 @@ test("block message names the sub-app on multi-app failure", () => {
   assert.match(result.stderr, /\(app: apps[/\\]backend-mono\)/);
   assert.match(result.stderr, /schema\.ts is invalid/);
 });
+
+test("two touched apps both run verify legs", () => {
+  const files = {
+    [p("node_modules")]: true,
+    ...appFiles("apps/a"),
+    ...appFiles("apps/b"),
+  };
+  const { deps, calls } = makeDeps({
+    files,
+    execScript: gitTouching("apps/a/convex/x.ts", "apps/b/convex/y.ts"),
+  });
+  const result = main({ cwd: CWD }, deps);
+  assert.equal(result.exitCode, 0);
+  const codegens = calls.filter((c) => c.tag === "codegen");
+  assert.equal(codegens.length, 2);
+  const cwds = new Set(codegens.map((c) => c.opts.cwd));
+  assert.ok(cwds.has(p("apps", "a")));
+  assert.ok(cwds.has(p("apps", "b")));
+});
+
+test("multi-app: failures are aggregated across apps", () => {
+  const files = {
+    [p("node_modules")]: true,
+    ...appFiles("apps/a"),
+    ...appFiles("apps/b"),
+  };
+  const { deps } = makeDeps({
+    files,
+    execScript: {
+      ...gitTouching("apps/a/convex/x.ts", "apps/b/convex/y.ts"),
+      codegen: {
+        status: 1,
+        stderr: "schema broken\n",
+      },
+    },
+  });
+  const result = main({ cwd: CWD }, deps);
+  assert.equal(result.exitCode, 2);
+  assert.match(result.stderr, /app: apps[/\\]a/);
+  assert.match(result.stderr, /app: apps[/\\]b/);
+});
+
+test("multi-app: timeout on first app still verifies second app", () => {
+  const files = {
+    [p("node_modules")]: true,
+    ...appFiles("apps/a"),
+    ...appFiles("apps/b"),
+  };
+  let codegenCalls = 0;
+  const { deps, calls } = makeDeps({
+    files,
+    execScript: gitTouching("apps/a/convex/x.ts", "apps/b/convex/y.ts"),
+  });
+  const inner = deps.exec;
+  deps.exec = (file, args, opts) => {
+    const r = inner(file, args, opts);
+    const joined = `${file} ${args.join(" ")}`;
+    if (joined.includes("codegen")) {
+      codegenCalls++;
+      if (codegenCalls === 1) {
+        return { ...r, status: null, timedOut: true };
+      }
+    }
+    return r;
+  };
+  const result = main({ cwd: CWD }, deps);
+  assert.equal(result.exitCode, 0);
+  // Second app should still get codegen (and likely tsc).
+  assert.ok(
+    calls.filter((c) => c.tag === "codegen").length >= 2 ||
+      calls.some((c) => c.opts?.cwd === p("apps", "b") && c.tag === "tsc"),
+    "second app must still be verified after first-app timeout",
+  );
+});
+
+test("null status without timeout never blocks", () => {
+  const { deps } = makeDeps({
+    files: baseFiles(),
+    execScript: {
+      ...DIRTY_GIT,
+      codegen: { status: null, timedOut: false, stderr: "" },
+    },
+  });
+  const result = main({ cwd: CWD }, deps);
+  assert.equal(result.exitCode, 0);
+});
+
+test("package-root cwd with hoisted parent node_modules still verifies", () => {
+  // Claude opened apps/backend-mono; node_modules only at monorepo root.
+  const app = p("apps", "backend-mono");
+  const files = {
+    [p("node_modules")]: true,
+    [p("node_modules", ".bin", "convex")]: true,
+    [p("node_modules", ".bin", "tsc")]: true,
+    [p("apps", "backend-mono", "convex")]: true,
+    [p("apps", "backend-mono", "package.json")]: CONVEX_PKG,
+    [p("apps", "backend-mono", "convex", "tsconfig.json")]: "{}",
+    // deliberately no apps/backend-mono/node_modules
+  };
+  const { deps, calls } = makeDeps({
+    files,
+    execScript: {
+      git: { status: 0, stdout: " M convex/foo.ts\n" },
+    },
+  });
+  const result = main({ cwd: app }, deps);
+  assert.equal(result.exitCode, 0);
+  assert.ok(calls.some((c) => c.tag === "codegen" || c.tag === "tsc"));
+  // Hoisted bins at monorepo root should be preferred over npx.
+  const tool = calls.find((c) => c.tag === "codegen" || c.tag === "tsc");
+  assert.ok(
+    tool && String(tool.file).includes(".bin"),
+    "should resolve hoisted root .bin",
+  );
+});
+
+test("all-invalid convex_apps falls back to auto-discover with advisory", () => {
+  const files = {
+    [p("node_modules")]: true,
+    ...appFiles("apps/backend-mono"),
+    [CONFIG_PATH]: '---\nconvex_apps: ["apps/typo-not-real"]\n---\n',
+  };
+  const { deps, calls } = makeDeps({
+    files,
+    execScript: gitTouching("apps/backend-mono/convex/foo.ts"),
+  });
+  const result = main({ cwd: CWD }, deps);
+  assert.equal(result.exitCode, 0);
+  assert.match(result.stderr, /falling back to auto-discover/);
+  assert.ok(calls.some((c) => c.tag === "codegen"));
+});
+
+test("deep nested convex path is verified (segment resolve)", () => {
+  const files = {
+    [p("node_modules")]: true,
+    ...appFiles("apps/backend-mono"),
+  };
+  const { deps, calls } = makeDeps({
+    files,
+    execScript: gitTouching(
+      "apps/backend-mono/convex/domains/foo/bar/baz/qux/item.ts",
+    ),
+  });
+  const result = main({ cwd: CWD }, deps);
+  assert.equal(result.exitCode, 0);
+  assert.ok(calls.some((c) => c.tag === "codegen"));
+  assert.equal(
+    calls.find((c) => c.tag === "codegen").opts.cwd,
+    p("apps", "backend-mono"),
+  );
+});

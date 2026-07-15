@@ -13,6 +13,7 @@ import {
   enclosingConvexDir,
   isConvexAppRoot,
   resolveAffectedApps,
+  resolveAllowlistMode,
   resolveLintApp,
 } from "./convex-apps.mjs";
 
@@ -86,10 +87,8 @@ test("enclosingConvexDir attributes a nested file to its app container", () => {
   assert.equal(app, p("apps", "backend-mono"));
 });
 
-test("enclosingConvexDir: deep path under convex/ still finds app (convex shortcut)", () => {
-  // Without the basename===convex shortcut, maxDepth=4 would burn hops on
-  // convex/a/b/c/d and never reach the app root. The shortcut jumps from the
-  // `convex` segment to its parent.
+test("enclosingConvexDir: deep path under convex/ still finds app (segment resolve)", () => {
+  // Segment-based resolve: nesting under convex/ does NOT consume maxDepth.
   const deps = fakeFs(monorepoFiles());
   const deep = p(
     "apps",
@@ -105,9 +104,27 @@ test("enclosingConvexDir: deep path under convex/ still finds app (convex shortc
   assert.equal(app, p("apps", "backend-mono"));
 });
 
-test("enclosingConvexDir: maxDepth still bounds climbs above the app", () => {
-  // A file outside any convex/ tree should not walk the whole filesystem;
-  // with maxDepth=1 from a shallow non-convex path we get null.
+test("enclosingConvexDir: five+ levels under convex/ with maxDepth=4 still resolve", () => {
+  // Regression: hop-counting used to exhaust maxDepth before reaching the
+  // convex segment (domains/foo/bar/baz/qux → null). Segment resolve fixes it.
+  const deps = fakeFs(monorepoFiles());
+  const deep = p(
+    "apps",
+    "backend-mono",
+    "convex",
+    "domains",
+    "foo",
+    "bar",
+    "baz",
+    "qux",
+    "item.ts",
+  );
+  const app = enclosingConvexDir(deep, ROOT, deps, 4);
+  assert.equal(app, p("apps", "backend-mono"));
+});
+
+test("enclosingConvexDir: maxDepth still bounds climbs for non-convex paths", () => {
+  // A file outside any convex/ tree uses the bounded fallback walk.
   const deps = fakeFs(monorepoFiles());
   const app = enclosingConvexDir(
     p("apps", "web", "src", "page.tsx"),
@@ -116,6 +133,71 @@ test("enclosingConvexDir: maxDepth still bounds climbs above the app", () => {
     1,
   );
   assert.equal(app, null);
+});
+
+test("declaresConvexDependency: optionalDependencies counts", () => {
+  const deps = fakeFs({
+    [p("package.json")]: JSON.stringify({
+      optionalDependencies: { convex: "^1.0.0" },
+    }),
+  });
+  assert.equal(declaresConvexDependency(ROOT, deps), true);
+});
+
+test("resolveAllowlistMode: all-invalid list falls back to auto", () => {
+  const deps = fakeFs(monorepoFiles());
+  const mode = resolveAllowlistMode(
+    ROOT,
+    { convex_apps: ["apps/does-not-exist"], discovery_max_depth: 4 },
+    deps,
+  );
+  assert.equal(mode.mode, "auto");
+  assert.equal(mode.allInvalid, true);
+});
+
+test("resolveAllowlistMode: empty list is intentional allow-nothing", () => {
+  const deps = fakeFs(monorepoFiles());
+  const mode = resolveAllowlistMode(
+    ROOT,
+    { convex_apps: [], discovery_max_depth: 4 },
+    deps,
+  );
+  assert.equal(mode.mode, "allow");
+  assert.equal(mode.set.size, 0);
+  assert.equal(mode.allInvalid, false);
+});
+
+test("resolveAffectedApps: all-invalid allowlist falls back to auto-discover", () => {
+  const deps = fakeFs(monorepoFiles());
+  const apps = resolveAffectedApps(
+    ["apps/backend-mono/convex/foo.ts"],
+    ROOT,
+    { convex_apps: ["apps/typo"], discovery_max_depth: 4 },
+    deps,
+  );
+  assert.deepEqual(apps, [p("apps", "backend-mono")]);
+});
+
+test("resolveAffectedApps: empty allowlist verifies nothing", () => {
+  const deps = fakeFs(monorepoFiles());
+  const apps = resolveAffectedApps(
+    ["apps/backend-mono/convex/foo.ts"],
+    ROOT,
+    { convex_apps: [], discovery_max_depth: 4 },
+    deps,
+  );
+  assert.deepEqual(apps, []);
+});
+
+test("resolveAffectedApps: deep path under convex/ attributes correctly", () => {
+  const deps = fakeFs(monorepoFiles());
+  const apps = resolveAffectedApps(
+    ["apps/backend-mono/convex/domains/foo/bar/baz/qux/item.ts"],
+    ROOT,
+    AUTO,
+    deps,
+  );
+  assert.deepEqual(apps, [p("apps", "backend-mono")]);
 });
 
 test("resolveAffectedApps: monorepo hoisted case attributes to the sub-app", () => {

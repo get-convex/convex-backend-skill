@@ -112,3 +112,58 @@ test("parseFrontmatter tolerates leading blank lines and inline comments", () =>
   );
   assert.equal(parsed.lint_hook, false);
 });
+
+test("quoted booleans and ints are recognized (\"false\", '6')", () => {
+  const config = loadConvexPluginConfig(
+    ROOT,
+    fakeFs({
+      [CONFIG_PATH]:
+        '---\ntypecheck_hook: "false"\nlint_hook: \'false\'\ndiscovery_max_depth: "6"\n---\n',
+    }),
+  );
+  assert.equal(config.typecheck_hook, false);
+  assert.equal(config.lint_hook, false);
+  assert.equal(config.discovery_max_depth, 6);
+});
+
+test("True/False/yes/no/on/off toggles are accepted", () => {
+  const config = loadConvexPluginConfig(
+    ROOT,
+    fakeFs({
+      [CONFIG_PATH]:
+        "---\ntypecheck_hook: False\nfreshness_hook: no\nsession_start_hook: off\nlint_hook: Yes\n---\n",
+    }),
+  );
+  assert.equal(config.typecheck_hook, false);
+  assert.equal(config.freshness_hook, false);
+  assert.equal(config.session_start_hook, false);
+  assert.equal(config.lint_hook, true);
+});
+
+test("multi-line YAML list for convex_apps is parsed", () => {
+  const config = loadConvexPluginConfig(
+    ROOT,
+    fakeFs({
+      [CONFIG_PATH]:
+        "---\nconvex_apps:\n  - apps/backend-mono\n  - apps/other\n---\n",
+    }),
+  );
+  assert.deepEqual(config.convex_apps, ["apps/backend-mono", "apps/other"]);
+});
+
+test("bare scalar convex_apps becomes a single-entry list", () => {
+  const config = loadConvexPluginConfig(
+    ROOT,
+    fakeFs({
+      [CONFIG_PATH]: "---\nconvex_apps: apps/backend-mono\n---\n",
+    }),
+  );
+  assert.deepEqual(config.convex_apps, ["apps/backend-mono"]);
+});
+
+test("hash inside quoted value is not treated as a comment", () => {
+  const parsed = parseFrontmatter(
+    '---\nconvex_apps: ["apps/foo # bar"]\n---\n',
+  );
+  assert.deepEqual(parsed.convex_apps, ["apps/foo # bar"]);
+});
