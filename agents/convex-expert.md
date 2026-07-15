@@ -199,9 +199,12 @@ Hitting a limit = redesign, not retry. Paginate (`paginationOptsValidator` + `.p
 
 Before writing custom code, check https://www.convex.dev/components. Reach for these without thinking:
 
-### Chat / LLM → `@convex-dev/agent`
+### Agentic apps (threads / tools / RAG) → `@convex-dev/agent`
 
-Any chat panel, agent loop, or LLM call — even "just one `Anthropic.messages.create`". Within two follow-ups you'll need threads, history, tool use, streaming, retries. A custom `messages` table is the wrong answer.
+When an app needs multiple threads, tool-calls, RAG, or durable multi-turn history, reach for `@convex-dev/agent` instead of hand-rolling it.
+
+<!-- AGENT-STREAMING-INTERIM: revert when get-convex/agent#295 ships `listUIMessagesWithStreams`. The component's streaming query does not type-check from scratch today (TS2719); restore "any chat/LLM → @convex-dev/agent" once #295 releases. -->
+For a **simple streaming chat** (one thread, token-by-token), build it directly: a `messages` table plus an action that streams tokens in, read by a reactive query. That is currently more reliable than the component's streaming wiring.
 
 ```ts
 // convex/convex.config.ts
