@@ -8,10 +8,9 @@
 //    silently (and fast) before any real work.
 //
 // 2. Injected-exec tests: import { main } and pass a fake `exec` (plus fake
-//    existsSync/readFileSync/clock), so the codegen → tsc → dev-once decision
-//    logic is exercised deterministically without shelling out to real
-//    toolchains. This is the fake-exec-injection seam the hook exports for
-//    exactly this purpose.
+//    existsSync/readFileSync/clock), so the codegen → tsc decision logic is
+//    exercised deterministically without shelling out to real toolchains.
+//    This is the fake-exec-injection seam the hook exports for this purpose.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -116,7 +115,7 @@ const p = (...parts) => resolve(CWD, ...parts);
 
 // A fake project: `files` maps absolute path → contents (existsSync = key
 // present; readFileSync = value or throw). `execScript` maps a command tag
-// ("git" | "codegen" | "tsc" | "dev") to a spawnSync-shaped result; every
+// ("git" | "codegen" | "tsc") to a spawnSync-shaped result; every
 // call is recorded for order/arg assertions.
 function makeDeps({ files = {}, execScript = {}, now } = {}) {
   const calls = [];
@@ -125,7 +124,6 @@ function makeDeps({ files = {}, execScript = {}, now } = {}) {
     if (file === "git") return "git";
     if (joined.includes("codegen")) return "codegen";
     if (joined.includes("tsc")) return "tsc";
-    if (joined.includes("dev --once")) return "dev";
     return "unknown";
   };
   const deps = {
@@ -232,7 +230,7 @@ test("ignores _generated/ and .d.ts churn under convex/", () => {
   );
 });
 
-test("dev --once runs (as CONVEX_AGENT_MODE=anonymous) when .env.local has CONVEX_DEPLOYMENT", () => {
+test("Stop verification never deploys when .env.local has CONVEX_DEPLOYMENT", () => {
   const { deps, calls } = makeDeps({
     files: baseFiles({
       [p(".env.local")]: "CONVEX_DEPLOYMENT=dev:happy-otter-123\n",
@@ -243,42 +241,7 @@ test("dev --once runs (as CONVEX_AGENT_MODE=anonymous) when .env.local has CONVE
   assert.equal(result.exitCode, 0);
   assert.deepEqual(
     calls.map((c) => c.tag),
-    ["git", "codegen", "tsc", "dev"],
-  );
-  const dev = calls[3];
-  assert.deepEqual(dev.args, ["dev", "--once"]);
-  assert.equal(
-    dev.opts.env?.CONVEX_AGENT_MODE,
-    "anonymous",
-    "dev --once must run in anonymous agent mode",
-  );
-});
-
-test("dev --once is SKIPPED when .env.local is missing (consent gate)", () => {
-  const { deps, calls } = makeDeps({
-    files: baseFiles(),
-    execScript: DIRTY_GIT,
-  });
-  const result = main({ cwd: CWD }, deps);
-  assert.equal(result.exitCode, 0);
-  assert.ok(
-    !calls.some((c) => c.tag === "dev"),
-    "no .env.local → dev --once must never run",
-  );
-});
-
-test("dev --once is SKIPPED when .env.local lacks CONVEX_DEPLOYMENT (consent gate)", () => {
-  const { deps, calls } = makeDeps({
-    files: baseFiles({
-      [p(".env.local")]: "NEXT_PUBLIC_CONVEX_URL=https://x.convex.cloud\n",
-    }),
-    execScript: DIRTY_GIT,
-  });
-  const result = main({ cwd: CWD }, deps);
-  assert.equal(result.exitCode, 0);
-  assert.ok(
-    !calls.some((c) => c.tag === "dev"),
-    "no CONVEX_DEPLOYMENT in .env.local → dev --once must never run",
+    ["git", "codegen", "tsc"],
   );
 });
 
@@ -328,25 +291,6 @@ test("tsc non-zero WITHOUT real diagnostics does not block (warnings discipline)
   assert.equal(result.exitCode, 0);
 });
 
-test("dev --once failure blocks: exit 2 with the error tail", () => {
-  const { deps } = makeDeps({
-    files: baseFiles({
-      [p(".env.local")]: "CONVEX_DEPLOYMENT=dev:happy-otter-123\n",
-    }),
-    execScript: {
-      ...DIRTY_GIT,
-      dev: {
-        status: 1,
-        stderr: "✖ Error: Hit an error while pushing:\nindex name invalid\n",
-      },
-    },
-  });
-  const result = main({ cwd: CWD }, deps);
-  assert.equal(result.exitCode, 2);
-  assert.match(result.stderr, /convex dev --once/);
-  assert.match(result.stderr, /index name invalid/);
-});
-
 test("missing binary (npx --no-install refusal) never blocks", () => {
   const files = baseFiles();
   delete files[p("node_modules", ".bin", "convex")];
@@ -368,9 +312,7 @@ test("overall 90s budget exhausted → allow (exit 0), later legs never run", ()
   let t = 0;
   const clock = () => t;
   const { deps, calls } = makeDeps({
-    files: baseFiles({
-      [p(".env.local")]: "CONVEX_DEPLOYMENT=dev:happy-otter-123\n",
-    }),
+    files: baseFiles(),
     execScript: DIRTY_GIT,
     now: clock,
   });

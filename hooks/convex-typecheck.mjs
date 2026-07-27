@@ -1,11 +1,9 @@
 #!/usr/bin/env node
 // Stop hook: when the agent finishes its turn, VERIFY the Convex backend —
-// `convex codegen`, then `tsc --noEmit`, then (consent-gated) a real
-// `convex dev --once` push. Convex's push + Next HMR can both go green while
-// `tsc --noEmit` is red (a dropped export, a bad Id<...>, a render-only
-// crash), and tsc can be green while the deploy-time push is red (schema
-// validation, analyze errors). This hook is the enforcement mechanism behind
-// the skills' "self-verify before you stop" rule.
+// `convex codegen`, then `tsc --noEmit`. This hook never deploys: project-root
+// ambiguity in monorepos can otherwise replace a valid backend with an empty
+// deployment. This is the enforcement mechanism behind the skills'
+// "self-verify before you stop" rule.
 //
 // Why Stop (not PostToolUse, where this hook used to live): any mid-turn
 // trigger fires BETWEEN coupled multi-file edits — file A references a symbol
@@ -20,17 +18,13 @@
 //   exit 0: `stop_hook_active` (loop guard — if we already blocked this stop
 //   once, don't block again), no convex/ directory, no node_modules, and no
 //   uncommitted convex/*.ts changes (skips purely conversational turns).
-// - Hard consent line: the `convex dev --once` leg runs ONLY when .env.local
-//   already exists AND already contains CONVEX_DEPLOYMENT. This hook must
-//   NEVER create or start a new Convex deployment/project as a side effect —
-//   if the project isn't provisioned, the leg is skipped silently.
 // - Hard ~90s overall budget across all legs. If the budget is exhausted or
 //   any child process hits its timeout, ALLOW (exit 0) — a slow verify must
 //   never wedge the session.
 // - Blocks (exit 2) only on REAL failures: a non-zero `convex codegen`, tsc
-//   output containing `error TS\d+`, or a non-zero `convex dev --once`.
-//   Missing binaries (`npx --no-install` refusing to run), warnings, and
-//   timeouts never block. Never triggers a network fetch for tooling.
+//   output containing `error TS\d+`. Missing binaries (`npx --no-install`
+//   refusing to run), warnings, and timeouts never block. Never triggers a
+//   network fetch for tooling.
 // - `main()` is exported with injectable exec/fs/clock so the test suite can
 //   fake the process boundary; the CLI entrypoint wires the real ones.
 
@@ -205,36 +199,6 @@ export function main(payload, overrides = {}) {
       // other non-error output must not block the agent.
       if (r.status !== 0 && /error TS\d+/.test(out)) {
         return block("tsc --noEmit", out);
-      }
-    }
-  }
-
-  // --- Leg C: `convex dev --once` (consent-gated). --------------------------
-  // HARD CONSENT LINE: only against an ALREADY-provisioned deployment.
-  // .env.local must already exist and already name a CONVEX_DEPLOYMENT;
-  // otherwise skip silently — never create/start a deployment from a hook.
-  if (remaining() > 0) {
-    let envLocal = null;
-    try {
-      envLocal = readFileSync(resolve(cwd, ".env.local"), "utf8");
-    } catch {
-      // No .env.local — leg skipped.
-    }
-    if (envLocal !== null && /(^|\n)\s*CONVEX_DEPLOYMENT\s*=/.test(envLocal)) {
-      const { file, args } = resolveBin(
-        cwd,
-        "convex",
-        ["dev", "--once"],
-        existsSync,
-      );
-      const r = exec(file, args, {
-        cwd,
-        timeout: remaining(),
-        env: { ...process.env, CONVEX_AGENT_MODE: "anonymous" },
-      });
-      if (r.timedOut) return ALLOW;
-      if (!isMissingBinary(r) && r.status !== 0) {
-        return block("convex dev --once", `${r.stdout}${r.stderr}`);
       }
     }
   }
