@@ -89,6 +89,19 @@ function isMissingBinary(result) {
   );
 }
 
+// A local backend already listening means a `convex dev` is ALREADY running
+// and pushing + typechecking continuously — our one-shot is redundant here,
+// not failing. Two `convex dev` processes cannot own one local deployment, so
+// the CLI refuses; that is a concurrency fact about the developer's machine,
+// not an error in their backend. Blocking on it makes the hook unusable for
+// anyone running a local deployment alongside their dev server, which is the
+// documented local-first workflow.
+function isLocalBackendBusy(result) {
+  return /local backend is still running on port/i.test(
+    `${result.stdout}${result.stderr}`,
+  );
+}
+
 // Does this project declare (or have installed) the `convex` package?
 function hasConvexDependency(cwd, { existsSync, readFileSync }) {
   try {
@@ -233,7 +246,7 @@ export function main(payload, overrides = {}) {
         env: { ...process.env, CONVEX_AGENT_MODE: "anonymous" },
       });
       if (r.timedOut) return ALLOW;
-      if (!isMissingBinary(r) && r.status !== 0) {
+      if (!isMissingBinary(r) && !isLocalBackendBusy(r) && r.status !== 0) {
         return block("convex dev --once", `${r.stdout}${r.stderr}`);
       }
     }

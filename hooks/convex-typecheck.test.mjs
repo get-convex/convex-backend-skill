@@ -347,6 +347,26 @@ test("dev --once failure blocks: exit 2 with the error tail", () => {
   assert.match(result.stderr, /index name invalid/);
 });
 
+test("a running local backend never blocks (a `convex dev` already owns it)", () => {
+  const { deps } = makeDeps({
+    files: baseFiles({
+      [p(".env.local")]: "CONVEX_DEPLOYMENT=local:local-myapp\n",
+    }),
+    execScript: {
+      ...DIRTY_GIT,
+      dev: {
+        status: 1,
+        stderr:
+          "✖ A local backend is still running on port 3210. " +
+          "Please stop it and run this command again.\n",
+      },
+    },
+  });
+  const result = main({ cwd: CWD }, deps);
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.stderr, "");
+});
+
 test("missing binary (npx --no-install refusal) never blocks", () => {
   const files = baseFiles();
   delete files[p("node_modules", ".bin", "convex")];
