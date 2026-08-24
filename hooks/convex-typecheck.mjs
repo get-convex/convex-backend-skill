@@ -18,19 +18,27 @@
 // Design notes:
 // - Self-guards short-circuit BEFORE any real work, each an instant silent
 //   exit 0: `stop_hook_active` (loop guard — if we already blocked this stop
-//   once, don't block again), no convex/ directory, no node_modules, and no
-//   uncommitted convex/*.ts changes (skips purely conversational turns).
+//   once, don't block again), the hook disabled via `.claude/convex.local.md`,
+//   no node_modules (walks ancestors for monorepo package-root checkouts), and
+//   no uncommitted convex/*.ts changes (skips purely conversational turns).
+// - Monorepo-aware: each touched convex/*.ts path is attributed to its nearest
+//   enclosing Convex app (a dir with a convex/ subdir), and codegen/tsc/dev run
+//   IN that app dir. Both codegen AND dev --once run only where the app's OWN
+//   package.json declares convex, so a hoisted node_modules/convex can no
+//   longer trigger a spurious "add convex to package.json" block.
 // - Hard consent line: the `convex dev --once` leg runs ONLY when .env.local
 //   already exists AND already contains CONVEX_DEPLOYMENT. This hook must
 //   NEVER create or start a new Convex deployment/project as a side effect —
 //   if the project isn't provisioned, the leg is skipped silently.
-// - Hard ~90s overall budget across all legs. If the budget is exhausted or
-//   any child process hits its timeout, ALLOW (exit 0) — a slow verify must
-//   never wedge the session.
+// - Hard ~90s overall budget, sliced per affected app so one slow app cannot
+//   starve the rest. A per-leg timeout continues to the next app (does not
+//   abandon the whole verify). If the overall budget is exhausted, remaining
+//   apps are skipped; prior real failures still block.
 // - Blocks (exit 2) only on REAL failures: a non-zero `convex codegen`, tsc
 //   output containing `error TS\d+`, or a non-zero `convex dev --once`.
-//   Missing binaries (`npx --no-install` refusing to run), warnings, and
-//   timeouts never block. Never triggers a network fetch for tooling.
+//   Missing binaries, null status (signal/OOM), warnings, and timeouts never
+//   block. Never triggers a network fetch for tooling. Block messages name
+//   the app dir; multi-app failures are aggregated.
 // - `main()` is exported with injectable exec/fs/clock so the test suite can
 //   fake the process boundary; the CLI entrypoint wires the real ones.
 
@@ -39,13 +47,21 @@ import {
   existsSync as realExistsSync,
   readFileSync as realReadFileSync,
 } from "node:fs";
-import { resolve } from "node:path";
+import { dirname, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { capture as realCapture } from "./analytics.mjs";
+import { hookEnabled, loadConvexPluginConfig } from "./config.mjs";
+import {
+  declaresConvexDependency,
+  resolveAffectedApps,
+  resolveAllowlistMode,
+} from "./convex-apps.mjs";
 
 const OVERALL_BUDGET_MS = 90_000;
+const MIN_APP_BUDGET_MS = 15_000;
 const GIT_TIMEOUT_MS = 10_000;
 const TAIL_LINES = 40;
+const NODE_MODULES_WALK_MAX = 10;
 
 const ALLOW = { exitCode: 0, stderr: "" };
 
@@ -89,42 +105,80 @@ function isMissingBinary(result) {
   );
 }
 
-// Does this project declare (or have installed) the `convex` package?
-function hasConvexDependency(cwd, { existsSync, readFileSync }) {
-  try {
-    const pkg = JSON.parse(readFileSync(resolve(cwd, "package.json"), "utf8"));
-    for (const key of ["dependencies", "devDependencies", "peerDependencies"]) {
-      if (pkg[key] && typeof pkg[key] === "object" && "convex" in pkg[key]) {
-        return true;
-      }
-    }
-  } catch {
-    // No/unparseable package.json — fall through to the installed check.
+// Prefer a local bin under the app, then under any hoist root (monorepo root
+// node_modules/.bin). Fall back to `npx --no-install` which refuses
+// harmlessly when nothing is installed.
+function resolveBin(appDir, name, args, existsSync, hoistRoots = []) {
+  for (const root of [appDir, ...hoistRoots]) {
+    if (!root) continue;
+    const local = resolve(root, "node_modules", ".bin", name);
+    if (existsSync(local)) return { file: local, args };
   }
-  return existsSync(resolve(cwd, "node_modules", "convex", "package.json"));
-}
-
-// Prefer the local bin (no network, no npx startup); fall back to
-// `npx --no-install` which refuses (harmlessly) when nothing is installed.
-function resolveBin(cwd, name, args, existsSync) {
-  const local = resolve(cwd, "node_modules", ".bin", name);
-  if (existsSync(local)) return { file: local, args };
   return { file: "npx", args: ["--no-install", name, ...args] };
 }
 
+// True when node_modules exists at startDir or an ancestor (hoisted monorepo
+// when Claude's cwd is a package subdir without its own node_modules).
+function hasNodeModulesAncestor(startDir, existsSync, maxHops = NODE_MODULES_WALK_MAX) {
+  let dir = resolve(startDir);
+  for (let i = 0; i <= maxHops; i++) {
+    if (existsSync(resolve(dir, "node_modules"))) return true;
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return false;
+}
+
+// Ancestors of cwd that have node_modules (for hoisted .bin lookup), nearest
+// first after the app dir itself is tried by resolveBin.
+function nodeModulesHoistRoots(startDir, existsSync, maxHops = NODE_MODULES_WALK_MAX) {
+  const roots = [];
+  let dir = resolve(startDir);
+  for (let i = 0; i <= maxHops; i++) {
+    if (existsSync(resolve(dir, "node_modules"))) roots.push(dir);
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return roots;
+}
+
 // Uncommitted convex/*.ts source changes (the "did this turn touch the
-// backend?" signal). Skips _generated/ and .d.ts, matches .ts/.tsx.
-function touchedConvexTs(porcelain) {
-  return porcelain.split("\n").some((line) => {
+// backend?" signal), returned as the list of matching paths so each can be
+// attributed to its enclosing Convex app. Skips _generated/ and .d.ts, matches
+// .ts/.tsx. Strips git's C-style quoting around paths with special chars.
+function touchedConvexTsFiles(porcelain) {
+  const paths = [];
+  for (const line of porcelain.split("\n")) {
     // Porcelain: `XY path` (or `XY old -> new` for renames — take the new).
-    const path = line.slice(3).split(" -> ").pop()?.trim() ?? "";
-    return (
+    let path = line.slice(3).split(" -> ").pop()?.trim() ?? "";
+    if (path.startsWith('"') && path.endsWith('"')) {
+      path = path
+        .slice(1, -1)
+        .replace(/\\n/g, "\n")
+        .replace(/\\t/g, "\t")
+        .replace(/\\"/g, '"')
+        .replace(/\\\\/g, "\\");
+    }
+    // Normalize backslashes so monorepo attribution regexes match on Windows.
+    path = path.replace(/\\/g, "/");
+    if (
       /(^|\/)convex\//.test(path) &&
       /\.tsx?$/.test(path) &&
       !path.endsWith(".d.ts") &&
       !path.includes("/_generated/")
-    );
-  });
+    ) {
+      paths.push(path);
+    }
+  }
+  return paths;
+}
+
+// Indeterminate child result (signal, OOM, etc.) — never treat as a real
+// compile/codegen failure.
+function isIndeterminate(result) {
+  return result.status == null && !result.timedOut;
 }
 
 export function main(payload, overrides = {}) {
@@ -146,12 +200,17 @@ export function main(payload, overrides = {}) {
 
   const cwd = payload.cwd ?? process.cwd();
 
-  // Only act in a project with a Convex backend and installed tooling.
-  if (!existsSync(resolve(cwd, "convex"))) return ALLOW;
-  if (!existsSync(resolve(cwd, "node_modules"))) return ALLOW;
+  // Per-project settings: honor an explicit disable of this hook (default on).
+  const config = loadConvexPluginConfig(cwd, fsDeps);
+  if (!hookEnabled(config, "typecheck_hook")) return ALLOW;
 
-  const deadline = now() + budgetMs;
-  const remaining = () => deadline - now();
+  // Installed tooling must be present somewhere in the tree. Walk ancestors so
+  // a package-root cwd in a hoisted monorepo still proceeds; missing binaries
+  // later are still handled leg-by-leg (never block).
+  if (!hasNodeModulesAncestor(cwd, existsSync)) return ALLOW;
+
+  const hoistRoots = nodeModulesHoistRoots(cwd, existsSync);
+  const overallDeadline = now() + budgetMs;
 
   // Only verify when the turn actually touched convex/*.ts — skips purely
   // conversational turns. (If this isn't a git repo we can't tell; verify
@@ -160,85 +219,186 @@ export function main(payload, overrides = {}) {
     cwd,
     timeout: GIT_TIMEOUT_MS,
   });
-  if (git.status === 0 && !touchedConvexTs(git.stdout)) return ALLOW;
+  const gitWorked = git.status === 0;
+  const touched = gitWorked ? touchedConvexTsFiles(git.stdout) : [];
+  if (gitWorked && touched.length === 0) return ALLOW;
 
-  const block = (leg, output) => {
+  // Attribute each touched convex/*.ts path to its enclosing Convex app and
+  // verify only those app(s). When git is unavailable we cannot attribute by
+  // touched paths; fall back carefully while still honoring convex_apps:
+  //   - allow + empty set ([]) → verify nothing
+  //   - allow + non-empty → only if cwd itself is an allowed app root
+  //   - auto → prior beta behavior: verify cwd when it has convex/
+  const allowMode = resolveAllowlistMode(cwd, config, fsDeps);
+  let apps;
+  if (gitWorked) {
+    apps = resolveAffectedApps(touched, cwd, config, fsDeps);
+  } else if (allowMode.mode === "allow") {
+    const cwdApp = resolve(cwd);
+    apps =
+      allowMode.set.has(cwdApp) && existsSync(resolve(cwdApp, "convex"))
+        ? [cwdApp]
+        : [];
+  } else {
+    apps = existsSync(resolve(cwd, "convex")) ? [cwd] : [];
+  }
+  if (apps.length === 0) {
+    // Empty intentional allowlist, or nothing attributed. Optional advisory
+    // when a non-empty list was all-invalid (we already fell back to auto and
+    // still found nothing — surface the misconfig once).
+    if (allowMode.allInvalid) {
+      return {
+        exitCode: 0,
+        stderr:
+          "convex plugin: convex_apps listed no valid Convex app roots " +
+          "(check paths in .claude/convex.local.md); skipped verify.\n",
+      };
+    }
+    return ALLOW;
+  }
+
+  // Prefer a path relative to the hook cwd so multi-app block reports are
+  // short and readable; fall back to the absolute app dir.
+  const appLabel = (app) => {
+    const rel = relative(cwd, app);
+    if (!rel || rel === "") return ".";
+    if (rel.startsWith("..")) return app;
+    return rel;
+  };
+
+  const formatBlock = (leg, output, app) => {
     const report = tail(output.trim() || `(no output; ${leg} exited non-zero)`);
-    // Fire-and-forget telemetry on the block path only; never let it break
-    // the hook.
+    const where = appLabel(app);
     try {
-      capture("stop_verify_blocked", { leg });
+      capture("stop_verify_blocked", { leg, app: where });
     } catch {
       // telemetry must never affect the verify report
     }
-    return {
-      exitCode: 2,
-      stderr:
-        `convex plugin: end-of-turn verify failed at \`${leg}\` — fix these ` +
-        `errors before finishing the turn:\n${report}\n`,
-    };
+    return (
+      `convex plugin: end-of-turn verify failed at \`${leg}\` ` +
+      `(app: ${where}) — fix these errors before finishing the turn:\n` +
+      `${report}\n`
+    );
   };
 
-  // --- Leg A: `convex codegen` (only when the convex dep is present). ------
-  if (remaining() > 0 && hasConvexDependency(cwd, fsDeps)) {
-    const { file, args } = resolveBin(cwd, "convex", ["codegen"], existsSync);
-    const r = exec(file, args, { cwd, timeout: remaining() });
-    if (r.timedOut) return ALLOW; // budget valve: never wedge the session
-    if (!isMissingBinary(r) && r.status !== 0) {
-      return block("convex codegen", `${r.stdout}${r.stderr}`);
-    }
+  // Per-app slice of the overall budget so one slow app cannot starve others.
+  const perAppBudget = Math.max(
+    MIN_APP_BUDGET_MS,
+    Math.floor(budgetMs / Math.max(1, apps.length)),
+  );
+
+  const failureReports = [];
+  let advisory = "";
+  if (allowMode.allInvalid) {
+    // Fell back to auto-discover after an all-invalid allowlist — mention it
+    // once so the typo is visible even when verify proceeds.
+    advisory =
+      "convex plugin: convex_apps listed no valid Convex app roots; " +
+      "falling back to auto-discover. Check .claude/convex.local.md.\n";
   }
 
-  // --- Leg B: `tsc --noEmit`. ----------------------------------------------
-  if (remaining() > 0) {
-    const convexTsconfig = existsSync(resolve(cwd, "convex", "tsconfig.json"));
-    const rootTsconfig = existsSync(resolve(cwd, "tsconfig.json"));
-    if (convexTsconfig || rootTsconfig) {
-      const tscArgs = convexTsconfig
-        ? ["--noEmit", "-p", resolve(cwd, "convex")]
-        : ["--noEmit"];
-      const { file, args } = resolveBin(cwd, "tsc", tscArgs, existsSync);
-      const r = exec(file, args, { cwd, timeout: remaining() });
-      if (r.timedOut) return ALLOW;
-      const out = `${r.stdout}${r.stderr}`;
-      // Block ONLY on real tsc diagnostics; a missing tsc, warnings, or
-      // other non-error output must not block the agent.
-      if (r.status !== 0 && /error TS\d+/.test(out)) {
-        return block("tsc --noEmit", out);
-      }
-    }
-  }
+  for (const app of apps) {
+    const overallLeft = () => overallDeadline - now();
+    if (overallLeft() <= 0) break;
 
-  // --- Leg C: `convex dev --once` (consent-gated). --------------------------
-  // HARD CONSENT LINE: only against an ALREADY-provisioned deployment.
-  // .env.local must already exist and already name a CONVEX_DEPLOYMENT;
-  // otherwise skip silently — never create/start a deployment from a hook.
-  if (remaining() > 0) {
-    let envLocal = null;
-    try {
-      envLocal = readFileSync(resolve(cwd, ".env.local"), "utf8");
-    } catch {
-      // No .env.local — leg skipped.
-    }
-    if (envLocal !== null && /(^|\n)\s*CONVEX_DEPLOYMENT\s*=/.test(envLocal)) {
+    const appDeadline = now() + perAppBudget;
+    const remaining = () =>
+      Math.max(0, Math.min(overallDeadline - now(), appDeadline - now()));
+
+    const canRunConvexCli = declaresConvexDependency(app, fsDeps);
+    // On timeout/indeterminate for a leg, abandon remaining legs for THIS app
+    // (free budget for other apps) but do not fail-open the whole hook.
+    let abandonApp = false;
+
+    // --- Leg A: `convex codegen` (only where the app declares convex). ------
+    if (remaining() > 0 && canRunConvexCli) {
       const { file, args } = resolveBin(
-        cwd,
+        app,
         "convex",
-        ["dev", "--once"],
+        ["codegen"],
         existsSync,
+        hoistRoots,
       );
-      const r = exec(file, args, {
-        cwd,
-        timeout: remaining(),
-        env: { ...process.env, CONVEX_AGENT_MODE: "anonymous" },
-      });
-      if (r.timedOut) return ALLOW;
-      if (!isMissingBinary(r) && r.status !== 0) {
-        return block("convex dev --once", `${r.stdout}${r.stderr}`);
+      const r = exec(file, args, { cwd: app, timeout: remaining() });
+      if (r.timedOut || isIndeterminate(r)) {
+        abandonApp = true;
+      } else if (!isMissingBinary(r) && r.status !== 0) {
+        failureReports.push(
+          formatBlock("convex codegen", `${r.stdout}${r.stderr}`, app),
+        );
+        continue; // next app — still report other apps' failures
+      }
+    }
+
+    // --- Leg B: `tsc --noEmit`. --------------------------------------------
+    if (!abandonApp && remaining() > 0) {
+      const convexTsconfig = existsSync(
+        resolve(app, "convex", "tsconfig.json"),
+      );
+      const rootTsconfig = existsSync(resolve(app, "tsconfig.json"));
+      if (convexTsconfig || rootTsconfig) {
+        const tscArgs = convexTsconfig
+          ? ["--noEmit", "-p", resolve(app, "convex")]
+          : ["--noEmit"];
+        const { file, args } = resolveBin(
+          app,
+          "tsc",
+          tscArgs,
+          existsSync,
+          hoistRoots,
+        );
+        const r = exec(file, args, { cwd: app, timeout: remaining() });
+        if (r.timedOut || isIndeterminate(r)) {
+          abandonApp = true;
+        } else {
+          const out = `${r.stdout}${r.stderr}`;
+          if (r.status !== 0 && /error TS\d+/.test(out)) {
+            failureReports.push(formatBlock("tsc --noEmit", out, app));
+            continue;
+          }
+        }
+      }
+    }
+
+    // --- Leg C: `convex dev --once` (declared-dep + consent-gated). ---------
+    if (!abandonApp && remaining() > 0 && canRunConvexCli) {
+      let envLocal = null;
+      try {
+        envLocal = readFileSync(resolve(app, ".env.local"), "utf8");
+      } catch {
+        // No .env.local — leg skipped.
+      }
+      if (envLocal !== null && /(^|\n)\s*CONVEX_DEPLOYMENT\s*=/.test(envLocal)) {
+        const { file, args } = resolveBin(
+          app,
+          "convex",
+          ["dev", "--once"],
+          existsSync,
+          hoistRoots,
+        );
+        const r = exec(file, args, {
+          cwd: app,
+          timeout: remaining(),
+          env: { ...process.env, CONVEX_AGENT_MODE: "anonymous" },
+        });
+        if (r.timedOut || isIndeterminate(r)) {
+          // next app
+        } else if (!isMissingBinary(r) && r.status !== 0) {
+          failureReports.push(
+            formatBlock("convex dev --once", `${r.stdout}${r.stderr}`, app),
+          );
+        }
       }
     }
   }
 
+  if (failureReports.length > 0) {
+    return {
+      exitCode: 2,
+      stderr: advisory + failureReports.join("\n"),
+    };
+  }
+  if (advisory) return { exitCode: 0, stderr: advisory };
   return ALLOW;
 }
 

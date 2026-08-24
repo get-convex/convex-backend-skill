@@ -123,6 +123,8 @@ import { readFileSync, existsSync } from "node:fs";
 import { resolve, dirname, join } from "node:path";
 import { createRequire } from "node:module";
 import { capture } from "./analytics.mjs";
+import { hookEnabled, loadConvexPluginConfig } from "./config.mjs";
+import { resolveLintApp } from "./convex-apps.mjs";
 
 // Fire-and-forget telemetry (one event per hook run, primary finding only).
 // `capture` already swallows every error and spawns a detached child, but
@@ -328,9 +330,10 @@ try {
   const toolInput = payload.tool_input ?? {};
   const filePath = toolInput.file_path ?? "";
   const cwd = payload.cwd ?? process.cwd();
-  // Real exports of convex/server, derived from the project's installed convex
-  // (null if unresolvable — Rule 6 then no-ops rather than guessing).
-  const serverExports = convexServerExports(cwd);
+
+  // Per-project settings: honor an explicit disable of this hook (default on).
+  const config = loadConvexPluginConfig(cwd, { existsSync, readFileSync });
+  if (!hookEnabled(config, "lint_hook")) emit(null);
 
   // Only act on TypeScript source inside a convex/ directory.
   // Skip generated code and declaration files.
@@ -341,6 +344,19 @@ try {
     !normalized.endsWith(".d.ts") &&
     !normalized.includes("/_generated/");
   if (!isConvexTs) emit(null);
+
+  // Resolve which Convex app this file belongs to. With an explicit
+  // `convex_apps` list configured, a file outside every listed app is skipped;
+  // without one, lint any convex/*.ts (nearest convex/ container, else cwd).
+  const appDir = resolveLintApp(resolve(cwd, filePath), cwd, config, {
+    existsSync,
+    readFileSync,
+  });
+  if (appDir === null) emit(null);
+
+  // Real exports of convex/server, derived from the app's installed convex
+  // (null if unresolvable — Rule 6 then no-ops rather than guessing).
+  const serverExports = convexServerExports(appDir);
 
   // --- Compute the projected file content -------------------------------
   let projected = null;

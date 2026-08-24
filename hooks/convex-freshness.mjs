@@ -12,6 +12,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { hookEnabled, loadConvexPluginConfig } from "./config.mjs";
 
 const BASE =
   process.env.CONVEX_PLUGIN_VERSIONS_BASE ||
@@ -46,12 +47,21 @@ function semverCmp(a, b) {
 }
 
 async function main() {
-  // Drain the hook stdin payload (unused) without failing on garbage.
+  // Read the hook stdin payload (for cwd), tolerating garbage.
+  let payload = {};
   try {
-    readFileSync(0, "utf8");
+    payload = JSON.parse(readFileSync(0, "utf8") || "{}") ?? {};
   } catch {
-    /* ignore */
+    /* ignore malformed input */
   }
+
+  // Per-project settings: honor an explicit disable of this hook (default on).
+  const repoRoot =
+    typeof payload.cwd === "string" && payload.cwd
+      ? payload.cwd
+      : process.cwd();
+  const config = loadConvexPluginConfig(repoRoot, { existsSync, readFileSync });
+  if (!hookEnabled(config, "freshness_hook")) process.exit(0);
 
   // Opt-out: a version check reaches our server, so respect the telemetry opt-outs
   // plus a dedicated switch.

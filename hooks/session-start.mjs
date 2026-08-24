@@ -15,8 +15,9 @@
 // fire-and-forget via a detached child, so this hook never delays the
 // session.
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { capture, isConvexProject } from "./analytics.mjs";
+import { hookEnabled, loadConvexPluginConfig } from "./config.mjs";
 
 const SESSION_SOURCES = new Set(["startup", "resume", "clear", "compact"]);
 
@@ -29,6 +30,14 @@ try {
   } catch {
     // ignore malformed input
   }
+  // Per-project settings: honor an explicit disable of this hook (default on).
+  const repoRoot =
+    typeof payload.cwd === "string" && payload.cwd
+      ? payload.cwd
+      : process.cwd();
+  const config = loadConvexPluginConfig(repoRoot, { existsSync, readFileSync });
+  if (!hookEnabled(config, "session_start_hook")) process.exit(0);
+
   const props = {
     os: process.platform,
     node_version: process.version,

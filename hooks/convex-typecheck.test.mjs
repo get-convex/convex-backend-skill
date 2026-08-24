@@ -296,6 +296,7 @@ test("codegen failure blocks: exit 2 with the error tail", () => {
   const result = main({ cwd: CWD }, deps);
   assert.equal(result.exitCode, 2);
   assert.match(result.stderr, /convex codegen/);
+  assert.match(result.stderr, /\(app: \.\)/);
   assert.match(result.stderr, /schema\.ts is invalid/);
 });
 
@@ -314,6 +315,7 @@ test("real tsc diagnostics block: exit 2 with the error tail", () => {
   const result = main({ cwd: CWD }, deps);
   assert.equal(result.exitCode, 2);
   assert.match(result.stderr, /error TS2322/);
+  assert.match(result.stderr, /\(app: \.\)/);
 });
 
 test("tsc non-zero WITHOUT real diagnostics does not block (warnings discipline)", () => {
@@ -344,6 +346,7 @@ test("dev --once failure blocks: exit 2 with the error tail", () => {
   const result = main({ cwd: CWD }, deps);
   assert.equal(result.exitCode, 2);
   assert.match(result.stderr, /convex dev --once/);
+  assert.match(result.stderr, /\(app: \.\)/);
   assert.match(result.stderr, /index name invalid/);
 });
 
@@ -425,4 +428,390 @@ test("stop_hook_active short-circuits before any exec (injected seam)", () => {
   const result = main({ cwd: CWD, stop_hook_active: true }, deps);
   assert.equal(result.exitCode, 0);
   assert.equal(calls.length, 0, "loop guard must run before any child process");
+});
+
+// --- Layer 3: monorepo / multi-app + per-project settings -------------------
+
+const CONVEX_PKG = JSON.stringify({ dependencies: { convex: "^1.0.0" } });
+const PLAIN_PKG = JSON.stringify({ dependencies: { react: "^18.0.0" } });
+const CONFIG_PATH = p(".claude", "convex.local.md");
+
+// A Convex app living in a subdirectory, with its own package.json + local
+// bins + convex/tsconfig.json.
+function appFiles(appRel, extra = {}) {
+  return {
+    [p(appRel, "convex")]: true,
+    [p(appRel, "package.json")]: CONVEX_PKG,
+    [p(appRel, "node_modules", ".bin", "convex")]: true,
+    [p(appRel, "node_modules", ".bin", "tsc")]: true,
+    [p(appRel, "convex", "tsconfig.json")]: "{}",
+    ...extra,
+  };
+}
+
+const gitTouching = (...paths) => ({
+  git: { status: 0, stdout: paths.map((rel) => ` M ${rel}\n`).join("") },
+});
+
+test("monorepo: codegen runs IN the sub-app, never the hoisted root", () => {
+  const files = {
+    // Root hoists node_modules (+ convex) but does not declare convex itself.
+    [p("node_modules")]: true,
+    [p("node_modules", "convex", "package.json")]: CONVEX_PKG,
+    [p("package.json")]: PLAIN_PKG,
+    ...appFiles("apps/backend-mono"),
+  };
+  const { deps, calls } = makeDeps({
+    files,
+    execScript: gitTouching("apps/backend-mono/convex/foo.ts"),
+  });
+  const result = main({ cwd: CWD }, deps);
+  assert.equal(result.exitCode, 0);
+  assert.deepEqual(
+    calls.map((c) => c.tag),
+    ["git", "codegen", "tsc"],
+  );
+  const appDir = p("apps", "backend-mono");
+  assert.equal(calls[1].opts.cwd, appDir, "codegen runs in the app dir");
+  assert.equal(calls[2].opts.cwd, appDir, "tsc runs in the app dir");
+});
+
+test("monorepo: a non-convex turn allows without running any leg", () => {
+  const files = {
+    [p("node_modules")]: true,
+    [p("node_modules", "convex", "package.json")]: CONVEX_PKG,
+    [p("package.json")]: PLAIN_PKG,
+    ...appFiles("apps/backend-mono"),
+  };
+  const { deps, calls } = makeDeps({
+    files,
+    execScript: gitTouching("apps/web/src/page.tsx"),
+  });
+  const result = main({ cwd: CWD }, deps);
+  assert.equal(result.exitCode, 0);
+  assert.deepEqual(calls.map((c) => c.tag), ["git"]);
+});
+
+test("multiple convex apps: only the touched app is verified", () => {
+  const files = {
+    [p("node_modules")]: true,
+    ...appFiles("apps/a"),
+    ...appFiles("apps/b"),
+  };
+  const { deps, calls } = makeDeps({
+    files,
+    execScript: gitTouching("apps/a/convex/x.ts"),
+  });
+  const result = main({ cwd: CWD }, deps);
+  assert.equal(result.exitCode, 0);
+  assert.deepEqual(
+    calls.map((c) => c.tag),
+    ["git", "codegen", "tsc"],
+  );
+  assert.equal(calls[1].opts.cwd, p("apps", "a"));
+  assert.ok(
+    !calls.some((c) => c.opts.cwd === p("apps", "b")),
+    "the untouched app must not be verified",
+  );
+});
+
+test("typecheck_hook: false → ALLOW before any exec (git included)", () => {
+  const { deps, calls } = makeDeps({
+    files: baseFiles({ [CONFIG_PATH]: "---\ntypecheck_hook: false\n---\n" }),
+    execScript: DIRTY_GIT,
+  });
+  const result = main({ cwd: CWD }, deps);
+  assert.equal(result.exitCode, 0);
+  assert.equal(calls.length, 0, "a disabled hook runs nothing at all");
+});
+
+test("explicit convex_apps: only listed apps verified, others ignored", () => {
+  const files = {
+    [p("node_modules")]: true,
+    ...appFiles("apps/backend-mono"),
+    ...appFiles("apps/other"),
+    // apps/ghost is listed but does not exist; must be dropped safely.
+    [CONFIG_PATH]:
+      '---\nconvex_apps: ["apps/backend-mono", "apps/ghost"]\n---\n',
+  };
+  const { deps, calls } = makeDeps({
+    files,
+    execScript: gitTouching(
+      "apps/backend-mono/convex/foo.ts",
+      "apps/other/convex/bar.ts",
+    ),
+  });
+  const result = main({ cwd: CWD }, deps);
+  assert.equal(result.exitCode, 0);
+  assert.equal(calls[1].opts.cwd, p("apps", "backend-mono"));
+  assert.ok(
+    !calls.some((c) => c.opts.cwd === p("apps", "other")),
+    "an app outside the explicit list must not be verified",
+  );
+});
+
+test("malformed .claude/convex.local.md → defaults, verify still runs", () => {
+  const { deps, calls } = makeDeps({
+    files: baseFiles({ [CONFIG_PATH]: "not frontmatter at all\n" }),
+    execScript: DIRTY_GIT,
+  });
+  const result = main({ cwd: CWD }, deps);
+  assert.equal(result.exitCode, 0);
+  assert.deepEqual(
+    calls.map((c) => c.tag),
+    ["git", "codegen", "tsc"],
+    "a broken config must not disable the hook",
+  );
+});
+
+test("hoisted node_modules/convex at root does NOT trigger a codegen block", () => {
+  // The exact current failing case: a convex/ dir at the hoisted root plus a
+  // hoisted node_modules/convex, but the root package.json does not declare
+  // convex. Old code ran codegen at the root and the CLI errored ("add convex
+  // to package.json"), blocking the turn. Now codegen is gated off; only tsc
+  // (harmless) runs.
+  const files = {
+    [p("node_modules")]: true,
+    [p("node_modules", "convex", "package.json")]: CONVEX_PKG,
+    [p("convex")]: true,
+    [p("package.json")]: PLAIN_PKG,
+    [p("convex", "tsconfig.json")]: "{}",
+    [p("node_modules", ".bin", "tsc")]: true,
+  };
+  const { deps, calls } = makeDeps({
+    files,
+    execScript: gitTouching("convex/foo.ts"),
+  });
+  const result = main({ cwd: CWD }, deps);
+  assert.equal(result.exitCode, 0, "must not block");
+  assert.ok(
+    !calls.some((c) => c.tag === "codegen"),
+    "codegen must NOT run where package.json does not declare convex",
+  );
+  assert.deepEqual(calls.map((c) => c.tag), ["git", "tsc"]);
+});
+
+test("hoisted root with .env.local does NOT run dev --once either", () => {
+  // Same false-positive shape as codegen: without a declared convex dep,
+  // consent-gated dev --once must also stay off (otherwise the CLI errors
+  // with "add convex to package.json" and blocks the turn).
+  const files = {
+    [p("node_modules")]: true,
+    [p("node_modules", "convex", "package.json")]: CONVEX_PKG,
+    [p("node_modules", ".bin", "convex")]: true,
+    [p("convex")]: true,
+    [p("package.json")]: PLAIN_PKG,
+    [p("convex", "tsconfig.json")]: "{}",
+    [p("node_modules", ".bin", "tsc")]: true,
+    [p(".env.local")]: "CONVEX_DEPLOYMENT=dev:happy-otter-123\n",
+  };
+  const { deps, calls } = makeDeps({
+    files,
+    execScript: gitTouching("convex/foo.ts"),
+  });
+  const result = main({ cwd: CWD }, deps);
+  assert.equal(result.exitCode, 0, "must not block");
+  assert.ok(
+    !calls.some((c) => c.tag === "codegen"),
+    "codegen must stay off",
+  );
+  assert.ok(
+    !calls.some((c) => c.tag === "dev"),
+    "dev --once must stay off when package.json does not declare convex",
+  );
+  assert.deepEqual(calls.map((c) => c.tag), ["git", "tsc"]);
+});
+
+test("block message names the sub-app on multi-app failure", () => {
+  const files = {
+    [p("node_modules")]: true,
+    ...appFiles("apps/backend-mono"),
+    ...appFiles("apps/other"),
+  };
+  const { deps } = makeDeps({
+    files,
+    execScript: {
+      ...gitTouching("apps/backend-mono/convex/foo.ts"),
+      codegen: {
+        status: 1,
+        stderr: "✖ Error: Unable to generate code:\nschema.ts is invalid\n",
+      },
+    },
+  });
+  const result = main({ cwd: CWD }, deps);
+  assert.equal(result.exitCode, 2);
+  assert.match(result.stderr, /convex codegen/);
+  assert.match(result.stderr, /\(app: apps[/\\]backend-mono\)/);
+  assert.match(result.stderr, /schema\.ts is invalid/);
+});
+
+test("two touched apps both run verify legs", () => {
+  const files = {
+    [p("node_modules")]: true,
+    ...appFiles("apps/a"),
+    ...appFiles("apps/b"),
+  };
+  const { deps, calls } = makeDeps({
+    files,
+    execScript: gitTouching("apps/a/convex/x.ts", "apps/b/convex/y.ts"),
+  });
+  const result = main({ cwd: CWD }, deps);
+  assert.equal(result.exitCode, 0);
+  const codegens = calls.filter((c) => c.tag === "codegen");
+  assert.equal(codegens.length, 2);
+  const cwds = new Set(codegens.map((c) => c.opts.cwd));
+  assert.ok(cwds.has(p("apps", "a")));
+  assert.ok(cwds.has(p("apps", "b")));
+});
+
+test("multi-app: failures are aggregated across apps", () => {
+  const files = {
+    [p("node_modules")]: true,
+    ...appFiles("apps/a"),
+    ...appFiles("apps/b"),
+  };
+  const { deps } = makeDeps({
+    files,
+    execScript: {
+      ...gitTouching("apps/a/convex/x.ts", "apps/b/convex/y.ts"),
+      codegen: {
+        status: 1,
+        stderr: "schema broken\n",
+      },
+    },
+  });
+  const result = main({ cwd: CWD }, deps);
+  assert.equal(result.exitCode, 2);
+  assert.match(result.stderr, /app: apps[/\\]a/);
+  assert.match(result.stderr, /app: apps[/\\]b/);
+});
+
+test("multi-app: timeout on first app still verifies second app", () => {
+  const files = {
+    [p("node_modules")]: true,
+    ...appFiles("apps/a"),
+    ...appFiles("apps/b"),
+  };
+  let codegenCalls = 0;
+  const { deps, calls } = makeDeps({
+    files,
+    execScript: gitTouching("apps/a/convex/x.ts", "apps/b/convex/y.ts"),
+  });
+  const inner = deps.exec;
+  deps.exec = (file, args, opts) => {
+    const r = inner(file, args, opts);
+    const joined = `${file} ${args.join(" ")}`;
+    if (joined.includes("codegen")) {
+      codegenCalls++;
+      if (codegenCalls === 1) {
+        return { ...r, status: null, timedOut: true };
+      }
+    }
+    return r;
+  };
+  const result = main({ cwd: CWD }, deps);
+  assert.equal(result.exitCode, 0);
+  // Second app should still get codegen (and likely tsc).
+  assert.ok(
+    calls.filter((c) => c.tag === "codegen").length >= 2 ||
+      calls.some((c) => c.opts?.cwd === p("apps", "b") && c.tag === "tsc"),
+    "second app must still be verified after first-app timeout",
+  );
+});
+
+test("null status without timeout never blocks", () => {
+  const { deps } = makeDeps({
+    files: baseFiles(),
+    execScript: {
+      ...DIRTY_GIT,
+      codegen: { status: null, timedOut: false, stderr: "" },
+    },
+  });
+  const result = main({ cwd: CWD }, deps);
+  assert.equal(result.exitCode, 0);
+});
+
+test("package-root cwd with hoisted parent node_modules still verifies", () => {
+  // Claude opened apps/backend-mono; node_modules only at monorepo root.
+  const app = p("apps", "backend-mono");
+  const files = {
+    [p("node_modules")]: true,
+    [p("node_modules", ".bin", "convex")]: true,
+    [p("node_modules", ".bin", "tsc")]: true,
+    [p("apps", "backend-mono", "convex")]: true,
+    [p("apps", "backend-mono", "package.json")]: CONVEX_PKG,
+    [p("apps", "backend-mono", "convex", "tsconfig.json")]: "{}",
+    // deliberately no apps/backend-mono/node_modules
+  };
+  const { deps, calls } = makeDeps({
+    files,
+    execScript: {
+      git: { status: 0, stdout: " M convex/foo.ts\n" },
+    },
+  });
+  const result = main({ cwd: app }, deps);
+  assert.equal(result.exitCode, 0);
+  assert.ok(calls.some((c) => c.tag === "codegen" || c.tag === "tsc"));
+  // Hoisted bins at monorepo root should be preferred over npx.
+  const tool = calls.find((c) => c.tag === "codegen" || c.tag === "tsc");
+  assert.ok(
+    tool && String(tool.file).includes(".bin"),
+    "should resolve hoisted root .bin",
+  );
+});
+
+test("all-invalid convex_apps falls back to auto-discover with advisory", () => {
+  const files = {
+    [p("node_modules")]: true,
+    ...appFiles("apps/backend-mono"),
+    [CONFIG_PATH]: '---\nconvex_apps: ["apps/typo-not-real"]\n---\n',
+  };
+  const { deps, calls } = makeDeps({
+    files,
+    execScript: gitTouching("apps/backend-mono/convex/foo.ts"),
+  });
+  const result = main({ cwd: CWD }, deps);
+  assert.equal(result.exitCode, 0);
+  assert.match(result.stderr, /falling back to auto-discover/);
+  assert.ok(calls.some((c) => c.tag === "codegen"));
+});
+
+test("deep nested convex path is verified (segment resolve)", () => {
+  const files = {
+    [p("node_modules")]: true,
+    ...appFiles("apps/backend-mono"),
+  };
+  const { deps, calls } = makeDeps({
+    files,
+    execScript: gitTouching(
+      "apps/backend-mono/convex/domains/foo/bar/baz/qux/item.ts",
+    ),
+  });
+  const result = main({ cwd: CWD }, deps);
+  assert.equal(result.exitCode, 0);
+  assert.ok(calls.some((c) => c.tag === "codegen"));
+  assert.equal(
+    calls.find((c) => c.tag === "codegen").opts.cwd,
+    p("apps", "backend-mono"),
+  );
+});
+
+test("empty convex_apps + git failure → ALLOW, no verify legs", () => {
+  // Intentional allow-nothing must hold even when we cannot use porcelain
+  // attribution (not a git repo / git status non-zero).
+  const { deps, calls } = makeDeps({
+    files: baseFiles({
+      [CONFIG_PATH]: "---\nconvex_apps: []\n---\n",
+    }),
+    execScript: {
+      git: { status: 128, stderr: "fatal: not a git repository\n" },
+    },
+  });
+  const result = main({ cwd: CWD }, deps);
+  assert.equal(result.exitCode, 0);
+  assert.deepEqual(
+    calls.map((c) => c.tag),
+    ["git"],
+    "empty allowlist must not fall back to verifying cwd",
+  );
 });
