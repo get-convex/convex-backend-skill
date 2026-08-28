@@ -1,6 +1,6 @@
 ---
 name: "convex-authz"
-description: "Audit and harden a Convex app's authorization: identity-from-arg impersonation, missing per-document ownership checks, public queries leaking PII/financial data by a client-supplied id, and writes into a parent/container the caller doesn't own — the single largest real-defect cluster measured against generated Convex backends (44 of 214). Runs a deterministic scan for the 4 shapes, then applies the canonical requireIdentity/requireOwner pattern, then verifies with tsc. TRIGGER on 'secure my app', 'audit auth', 'add login', 'who can access this data', or an explicit 'audit my authz'. NOT always-on. SKIP when there is no convex/ directory."
+description: "Audit and harden a Convex app's authorization: identity-from-arg impersonation, missing per-document ownership checks, public queries leaking data by a client-supplied id, and writes into a parent/container the caller doesn't own. Scans for the 4 shapes, applies requireIdentity/requireOwner, verifies with tsc. TRIGGER on 'secure my app', 'audit auth/authz', 'who can access this data'. SKIP when there is no convex/ directory."
 license: "Apache-2.0"
 ---
 

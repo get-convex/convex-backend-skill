@@ -1,6 +1,7 @@
 ---
-description: Scaffold a new Convex app from a one-sentence idea and build it live — a Next.js + shadcn app with a floating Chef panel (progress feed, todo checklist, inline refinement questions, feature-request form), dev servers and error watchers already running.
-argument-hint: [one-sentence app idea]
+description: "Scaffold a new Convex app from a one-sentence idea and build it live — a Next.js + shadcn app with a floating Chef panel (progress feed, todo checklist, inline refinement questions, feature-request form), dev servers and error watchers already running."
+argument-hint: "[one-sentence app idea]"
+disable-model-invocation: true
 ---
 
 The user wants to spin up a brand-new Convex app and watch it build live.

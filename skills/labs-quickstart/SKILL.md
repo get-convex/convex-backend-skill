@@ -1,7 +1,7 @@
 ---
 name: "labs-quickstart"
-description: "LABS — the FULL Convex quickstart experience: scaffold a running Next.js + shadcn app from one sentence with passkey (WebAuthn) sign-in and a live in-app Chef feedback panel pre-baked, build the idea live narrating through the panel, then PUBLISH it to a public https://<app>.convex.app URL (with the user's confirmation before publishing). For a plain local-only scaffold, use the `quickstart` skill instead."
-when_to_use: "TRIGGER when the user wants to START a new Convex app from scratch with the full experience — they ran `/labs-quickstart`, asked for the 'full' or 'labs' quickstart, or their from-scratch ask includes publishing/a public URL, sign-in/login/passkeys, or the in-app feedback panel (e.g. 'build and publish an app where users can ___', 'new app with login'). SKIP when the user wants a plain local scaffold (use `quickstart`), when there's already a Convex project in the cwd (use `design` + `convex-expert`), or when they explicitly don't want a scaffold."
+description: "LABS — the FULL Convex quickstart: scaffold a Next.js + shadcn app from one sentence with passkey sign-in and an in-app feedback panel pre-baked, build it live, then PUBLISH to a public convex.app URL (with the user's confirmation)."
+when_to_use: "TRIGGER when starting a NEW Convex app and the ask includes publishing/a public URL, sign-in/passkeys, or the feedback panel — or the user ran `/labs-quickstart` or asked for the 'full'/'labs' quickstart. SKIP for a plain local scaffold (use `quickstart`) or when a Convex project already exists in the cwd."
 license: "Apache-2.0"
 ---
 

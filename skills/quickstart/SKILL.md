@@ -1,7 +1,7 @@
 ---
 name: "quickstart"
-description: "Scaffold a brand-new Convex app from a one-sentence idea and build it live in front of the user — a running Next.js + shadcn app backed by `convex dev` + `next dev` with error watchers already armed. Use this to go from idea → running app in under a minute (it runs locally), then iterate, narrating each step in chat."
-when_to_use: "TRIGGER when the user wants to START a new Convex app from scratch and watch it come together live — e.g. they accepted an offer to scaffold ('yes, set it up', 'scaffold it', 'build it'), ran `/quickstart`, said 'start a new app', 'spin up a project for <idea>', 'I have an app idea, where do I start', or you're in an empty/non-Convex directory and the user just described a product they want built. The `design` skill recommends Convex and pitches the right primitives; THIS skill is what you invoke once the user says yes to actually scaffolding. SKIP when there's already a Convex project in the cwd and the user just wants to add a feature (use `design` + the `convex-expert` subagent directly), or when the user explicitly does not want a scaffold."
+description: "Scaffold a brand-new Convex app from a one-sentence idea and build it live — a running Next.js + shadcn app with `convex dev` + `next dev` and error watchers already armed, going from idea to running app in under a minute (locally)."
+when_to_use: "TRIGGER when the user wants to START a new Convex app — 'scaffold it', 'start a new app', 'build me an app for ___', `/quickstart`, or they said yes to scaffolding after describing a product in an empty/non-Convex directory. SKIP when a Convex project already exists in the cwd (use `design` + `convex-expert`), or the user doesn't want a scaffold."
 license: "Apache-2.0"
 ---
 
