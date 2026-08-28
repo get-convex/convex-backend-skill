@@ -33,7 +33,7 @@ Front-loaded, not a post-hoc lint. These are the highest-frequency mistakes and 
 
 ## Self-verify — before declaring backend work done, write code, not ceremony
 
-Before you call any backend feature finished: run `npx tsc --noEmit` and, when a deployment is available (or via a local anonymous one: `CONVEX_AGENT_MODE=anonymous npx convex dev --once`), push it. Fix every error either one reports before finishing — one verify round catches the wrong-relative-import / duplicate-symbol / unbalanced-paren class that otherwise breaks the deploy after you've already reported success.
+Before you call any backend feature finished: run `npx tsc --noEmit` and push it to a deployment. Prefer the project's existing one; otherwise `npx convex dev --once` when `npx convex whoami` succeeds, and `CONVEX_AGENT_MODE=anonymous npx convex dev --once` ONLY when it does not. Forcing anonymous on a signed-in user rebinds `.env.local` and costs them the persistent, publishable cloud deployment they expect. Fix every error either one reports before finishing — one verify round catches the wrong-relative-import / duplicate-symbol / unbalanced-paren class that otherwise breaks the deploy after you've already reported success.
 
 ## When the user says yes to scaffolding, invoke the `quickstart` skill
 
@@ -131,12 +131,15 @@ The user provides backend requirements: an API, data model, server function, sch
 
 If your training data tells you any of the following, it is **outdated**:
 
-- "`npx convex dev` requires interactive GitHub login the first time." — False since the anonymous-deployment release. The CLI auto-selects an anonymous local deployment whenever stdin isn't a TTY **or** you're not logged in, so a genuinely headless invocation needs no env var. The one case it still prompts is a real pseudo-terminal (`isTTY`) while you're already logged in — common in agent/CI shells — where you'll hit `✖ Cannot prompt for input in non-interactive terminals. (Team:)`. **Setting `CONVEX_AGENT_MODE=anonymous` forces anonymous regardless of TTY/login, so it's the safe default for headless agents.** (`--configure new` / `--dev-deployment local` do not bypass the team prompt; the env var does.)
+- "`npx convex dev` requires interactive GitHub login the first time." — False since the anonymous-deployment release. The CLI auto-selects an anonymous local deployment whenever stdin isn't a TTY **or** you're not logged in, so a genuinely headless invocation needs no env var. The one case it still prompts is a real pseudo-terminal (`isTTY`) while you're already logged in — common in agent/CI shells — where you'll hit `✖ Cannot prompt for input in non-interactive terminals. (Team:)`. **Fix that by resolving the team, not by forcing anonymous:** set `CONVEX_TEAM=<slug>` (or `CONVEX_DEPLOY_KEY`) and the prompt goes away while the user keeps their cloud dev deployment. `CONVEX_AGENT_MODE=anonymous` does bypass the prompt regardless of TTY/login, but on a signed-in user it silently rebinds `.env.local` to a throwaway local backend: they lose persistence, publishing, and the AI Gateway. Reach for it only when `npx convex whoami` fails. (`--configure new` / `--dev-deployment local` bypass neither.)
 
   ```sh
+  # signed in (the common case): keep their cloud dev deployment
+  npx convex whoami && npx convex dev --once
+  # long-running dev loop, same deployment:
+  npx convex dev
+  # ONLY when whoami fails (no account): throwaway local backend
   CONVEX_AGENT_MODE=anonymous npx convex dev --once
-  # or, for a long-running dev loop:
-  CONVEX_AGENT_MODE=anonymous npx convex dev
   ```
 - "Use `getUrl()` to store storage URLs in tables." — Storage URLs expire. Store the `Id<"_storage">` and call `ctx.storage.getUrl(id)` on read.
 - "Write your own `messages` / `sessions` / `oauth_tokens` tables for chat or auth." — Use `@convex-dev/agent` for chat / LLM workflows, and Convex Auth (or WorkOS AuthKit) plus a thin `users` table keyed by `tokenIdentifier` for auth.
@@ -660,7 +663,7 @@ When building Convex backend features, follow these practices:
 - **Plan for multi-tenancy early** — Add `workspaceId: v.id("workspaces")` (or similar) to every shared table from day one, and gate access in every query/mutation.
 - **Mind resource limits** — Paginate or use the `migrations` / `workpool` components when you'd exceed 16K reads, 8K writes, 1 MiB doc, 8 MiB payload, or 1s query CPU.
 - **Deploy on save** — `npx convex dev` pushes on save. Watch the dev log for `Schema validation failed`, `ReturnsValidationError`, and `ArgumentValidationError` — these are the most common breakages and they surface immediately.
-- **For headless agents** — a non-TTY invocation already auto-selects an anonymous deployment, but set `CONVEX_AGENT_MODE=anonymous` before `npx convex dev` to force it even inside a pseudo-terminal while logged in (the one case that still prompts `Cannot prompt for input… (Team:)`).
+- **For headless agents** — a non-TTY invocation already auto-selects an anonymous deployment when the user has no account. If they ARE signed in, keep them on cloud: set `CONVEX_TEAM=<slug>` to clear the `Cannot prompt for input… (Team:)` prompt. Only force `CONVEX_AGENT_MODE=anonymous` when `npx convex whoami` fails, since it costs a signed-in user their persistent, publishable deployment (and with it the AI Gateway).
 
 **IMPORTANT**: Match implementation complexity to the problem. A simple CRUD feature needs a schema, a few queries, and a few mutations — not an event-sourced architecture with CQRS. Conversely, a real-time collaborative feature with conflict resolution needs careful thought. The right architecture is the simplest one that meets the actual requirements.
 

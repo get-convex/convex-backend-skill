@@ -45,7 +45,7 @@ Front-loaded, not a post-hoc lint. These are the highest-frequency mistakes and 
 Before you call any backend work finished, verify it actually compiles and pushes:
 
 1. Run `npx tsc --noEmit`.
-2. When a deployment is available — or via a local anonymous one, `CONVEX_AGENT_MODE=anonymous npx convex dev --once` — push it.
+2. Push it to a deployment. Prefer the project's existing one; otherwise `npx convex dev --once` when `npx convex whoami` succeeds, and `CONVEX_AGENT_MODE=anonymous npx convex dev --once` ONLY when it does not — forcing anonymous on a signed-in user rebinds `.env.local` and costs them their persistent, publishable cloud deployment.
 
 **Fix every error either one reports before finishing.** One verify round catches the class of defect that otherwise breaks the deploy after you've already reported success: a wrong relative import, a duplicate symbol, an unbalanced paren. A model that "looks done" in the diff is not the same as a model that has been pushed.
 
@@ -287,7 +287,7 @@ Prefer `customQuery`/`customMutation` over a hand-rolled row-level-security help
 | `use node` in error | Imported a Node-only module (e.g. `crypto`, `fs`) into a default V8 file — including `http.ts` route handlers | Add `"use node";` at the top and move to an action, or use Web Crypto (`crypto.subtle`) instead of `import`ing `crypto` |
 | `TypeError: Cannot read properties of null (reading 'redirect')` | Convex Auth missing env keys | `npx @convex-dev/auth --skip-git-check --web-server-url <url>` |
 | App stuck "signed out" — sign-in succeeds, tokens mint, but `getAuthUserId`/`getUserIdentity` is always `null`, queries return `[]`, **no error** | `convex/auth.config.ts` was never created (no registered JWT issuer) | Create `convex/auth.config.ts` (see Auth section) and re-push |
-| `nonInteractiveError` / `Cannot prompt for input` | TTY-required prompt under a non-TTY harness | `CONVEX_AGENT_MODE=anonymous` before `npx convex dev` |
+| `nonInteractiveError` / `Cannot prompt for input` | TTY-required team prompt under a non-TTY harness | Set `CONVEX_TEAM=<slug>` (keeps their cloud deployment). `CONVEX_AGENT_MODE=anonymous` only when `npx convex whoami` fails |
 
 ## Visual quality — don't ship grey-on-grey
 
