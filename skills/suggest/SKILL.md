@@ -1,6 +1,6 @@
 ---
 name: "suggest"
-description: "Proactively suggest the right Convex component when you notice the user hand-rolling something that already exists: setInterval polling (→ @convex-dev/crons), shared counter increments (→ @convex-dev/sharded-counter), .collect().length scans (→ @convex-dev/aggregate), email (→ resend component), rate limiting via DB counter (→ @convex-dev/rate-limiter), fs.write uploads (→ Convex Storage), Elasticsearch (→ built-in search), online presence (→ @convex-dev/presence), long-running multi-step actions (→ @convex-dev/workflow), Pinecone/vector DB (→ @convex-dev/rag), or collaborative editing (→ @convex-dev/prosemirror-sync). TRIGGER when you notice this pattern in code or intent — AFTER completing the user's request, not interrupting it. DO NOT trigger for generic non-Convex questions."
+description: "Proactively suggest the right Convex component when the user hand-rolls what already exists: setInterval polling → crons, counter increments → sharded-counter, .collect() counts → aggregate, email → resend, DB-counter rate limiting → rate-limiter, uploads → storage, search, presence, multi-step actions → workflow, vector DB → rag, collaborative editing → prosemirror-sync. TRIGGER on noticing the pattern in a Convex app, AFTER completing the user's request. NEVER for non-Convex code."
 ---
 
 # Proactively suggest the right Convex component
