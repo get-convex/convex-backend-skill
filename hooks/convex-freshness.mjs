@@ -18,6 +18,21 @@ const BASE =
   "https://basic-anteater-667.convex.site";
 const THROTTLE_MS = 24 * 60 * 60 * 1000;
 
+// The marketplace this repo publishes to. Other marketplaces (the official
+// Anthropic one, say) pin their own copy of the plugin and can lag `latest`,
+// so the upgrade instruction has to match where the running copy came from:
+// `claude plugin marketplace update` only delivers `latest` from ours.
+const HOME_MARKETPLACE = "convex";
+const HOME_MARKETPLACE_REF = "get-convex/convex-backend-skill";
+
+// Cache installs live at <plugins>/cache/<marketplace>/<plugin>/<version>.
+// Anything else (a --plugin-dir dev checkout, say) has no marketplace to name.
+function installMarketplace(root) {
+  const parts = String(root).split(/[\\/]+/);
+  const i = parts.lastIndexOf("cache");
+  return i !== -1 && i + 1 < parts.length ? parts[i + 1] : null;
+}
+
 // Emit SessionStart context (the assistant relays it), then exit.
 function nudge(context) {
   try {
@@ -120,14 +135,25 @@ async function main() {
 
   if (semverCmp(installed, entry.latest) >= 0) process.exit(0); // current
 
+  const marketplace = installMarketplace(root);
+  const foreign = marketplace !== null && marketplace !== HOME_MARKETPLACE;
+  // A copy installed from another marketplace is stuck at that marketplace's
+  // pin: `claude plugin marketplace update` may deliver nothing. Point those
+  // users at the Convex marketplace, which always serves `latest`.
+  const switchCmd = `\`claude plugin marketplace add ${HOME_MARKETPLACE_REF}\` then \`claude plugin install ${name}@${HOME_MARKETPLACE}\``;
+
   const belowMin = entry.min && semverCmp(installed, entry.min) < 0;
   if (belowMin) {
     nudge(
-      `The installed Convex plugin (${name} v${installed}) is well behind the latest (v${entry.latest}) and below the supported minimum (v${entry.min}). Early in the session, clearly tell the user to upgrade: run \`claude plugin marketplace update\` then reinstall the plugin — some features may misbehave until they do.`,
+      foreign
+        ? `The installed Convex plugin (${name} v${installed}) is well behind the latest (v${entry.latest}) and below the supported minimum (v${entry.min}). It was installed from the "${marketplace}" marketplace, which pins its own copy and may not serve v${entry.latest}. Early in the session, clearly tell the user to install it from the Convex marketplace instead: run ${switchCmd} — some features may misbehave until they do.`
+        : `The installed Convex plugin (${name} v${installed}) is well behind the latest (v${entry.latest}) and below the supported minimum (v${entry.min}). Early in the session, clearly tell the user to upgrade: run \`claude plugin marketplace update\` then reinstall the plugin — some features may misbehave until they do.`,
     );
   } else {
     nudge(
-      `A newer Convex plugin is available (${name} v${entry.latest}; installed v${installed}). At a natural moment, let the user know they can upgrade with \`claude plugin marketplace update\` (then reinstall). Informational only — do not interrupt their work.`,
+      foreign
+        ? `A newer Convex plugin is available (${name} v${entry.latest}; installed v${installed} from the "${marketplace}" marketplace, which pins its own copy and may not serve the newer version). At a natural moment, let the user know the latest comes straight from the Convex marketplace: run ${switchCmd}. Informational only — do not interrupt their work.`
+        : `A newer Convex plugin is available (${name} v${entry.latest}; installed v${installed}). At a natural moment, let the user know they can upgrade with \`claude plugin marketplace update\` (then reinstall). Informational only — do not interrupt their work.`,
     );
   }
 }
