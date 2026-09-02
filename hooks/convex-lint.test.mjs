@@ -1292,6 +1292,140 @@ test("stays silent for a _generated/ file under convex/", () => {
   assertAllowedSilent(result);
 });
 
+// --- vitest-only files are not Convex runtime modules ----------------------
+// Convex's bundler never makes a `*.test.ts` an entry point (`entryPoints()`
+// skips any basename with more than one dot), and nothing in the runtime
+// import graph reaches a `__tests__/` directory — so these files run only
+// under vitest, in plain Node, where Node builtins are legal. Denying them
+// blocked real edits (e.g. `convex/__tests__/*.source.test.ts` reading its
+// own source with `node:fs`).
+
+test("stays silent for a *.test.ts file under convex/ that imports node:fs", () => {
+  const result = runHook(
+    writePayload(
+      "/tmp/proj/convex/shallowDeleteAuthBoundary.test.ts",
+      `import { readFileSync } from "node:fs";\n` +
+        `import { describe, expect, it } from "vitest";\n` +
+        `describe("x", () => { it("y", () => { expect(readFileSync).toBeTypeOf("function"); }); });\n`,
+    ),
+  );
+  assertAllowedSilent(result);
+});
+
+test("stays silent for a convex/__tests__/ file that imports node:fs and node:path", () => {
+  const result = runHook(
+    writePayload(
+      "/tmp/proj/convex/__tests__/orchestratorProviderFallback.source.test.ts",
+      `import { readFileSync } from "node:fs";\n` +
+        `import { resolve } from "node:path";\n` +
+        `import { describe, expect, it } from "vitest";\n` +
+        `describe("source", () => {\n` +
+        `  it("reads", () => {\n` +
+        `    expect(readFileSync(resolve("convex/agents.ts"), "utf8")).toBeTypeOf("string");\n` +
+        `  });\n` +
+        `});\n`,
+    ),
+  );
+  assertAllowedSilent(result);
+});
+
+test("stays silent for a nested convex/lib/__tests__/ file importing node:crypto", () => {
+  const result = runHook(
+    writePayload(
+      "/tmp/proj/convex/lib/__tests__/transientErrors.test.ts",
+      `import { randomUUID } from "node:crypto";\n` +
+        `import { describe, expect, it } from "vitest";\n` +
+        `describe("x", () => { it("y", () => { expect(randomUUID()).toBeTypeOf("string"); }); });\n`,
+    ),
+  );
+  assertAllowedSilent(result);
+});
+
+test("stays silent for a *.integration.test.ts file under convex/", () => {
+  const result = runHook(
+    writePayload(
+      "/tmp/proj/convex/notebookV1.integration.test.ts",
+      `import { readFileSync } from "node:fs";\n` +
+        `import { describe, it } from "vitest";\n` +
+        `describe("x", () => { it("y", () => { readFileSync("/etc/hosts"); }); });\n`,
+    ),
+  );
+  assertAllowedSilent(result);
+});
+
+test("stays silent for a *.spec.ts file under convex/", () => {
+  const result = runHook(
+    writePayload(
+      "/tmp/proj/convex/agents.spec.ts",
+      `import { readFileSync } from "node:fs";\n` +
+        `import { describe, it } from "vitest";\n` +
+        `describe("x", () => { it("y", () => { readFileSync("/etc/hosts"); }); });\n`,
+    ),
+  );
+  assertAllowedSilent(result);
+});
+
+test("the exemption does not weaken the guard on a real runtime module", () => {
+  const result = runHook(
+    writePayload(
+      "/tmp/proj/convex/dangerousRuntimeModule.ts",
+      `import { readFileSync } from "node:fs";\n` +
+        `import { query } from "./_generated/server";\n` +
+        `export const readIt = query({ args: {}, returns: v.string(), handler: async () => readFileSync("/etc/hosts", "utf8") });\n`,
+    ),
+  );
+  assertDenied(result, 'Node API without "use node"');
+});
+
+test("a runtime module whose name merely contains 'test' is still linted", () => {
+  const result = runHook(
+    writePayload(
+      "/tmp/proj/convex/testHarness.ts",
+      `import { readFileSync } from "node:fs";\n` +
+        `export const raw = readFileSync("/etc/hosts", "utf8");\n`,
+    ),
+  );
+  assertDenied(result, 'Node API without "use node"');
+});
+
+test("a __tests__-adjacent runtime module is still linted", () => {
+  const result = runHook(
+    writePayload(
+      "/tmp/proj/convex/lib/testUtils.ts",
+      `import { readFileSync } from "node:fs";\n` +
+        `export const raw = readFileSync("/etc/hosts", "utf8");\n`,
+    ),
+  );
+  assertDenied(result, 'Node API without "use node"');
+});
+
+test("a single-dot helper inside __tests__/ is still linted (Convex bundles it)", () => {
+  // `entryPoints()` only skips basenames with more than one dot, so
+  // `__tests__/fixtures.ts` IS collected and pushed — the guard must hold.
+  const result = runHook(
+    writePayload(
+      "/tmp/proj/convex/__tests__/fixtures.ts",
+      `import { readFileSync } from "node:fs";\n` +
+        `export const raw = readFileSync("/etc/hosts", "utf8");\n`,
+    ),
+  );
+  assertDenied(result, 'Node API without "use node"');
+});
+
+test("test-file exemption also covers the non-Node rules (no false deny)", () => {
+  const result = runHook(
+    writePayload(
+      "/tmp/proj/convex/__tests__/antiPatternCorpus.source.test.ts",
+      `import { describe, it } from "vitest";\n` +
+        `// A source-assertion test legitimately embeds the very patterns the\n` +
+        `// linter denies, as string fixtures to assert against.\n` +
+        `const BAD = 'ctx.runMutation("users:getOrCreate", {})';\n` +
+        `describe("x", () => { it("y", () => { void BAD; }); });\n`,
+    ),
+  );
+  assertAllowedSilent(result);
+});
+
 test("no-op path (non-convex file) completes in well under 200ms", () => {
   const start = process.hrtime.bigint();
   const result = runHook(writePayload("/tmp/proj/README.md", "# hi\n"));
