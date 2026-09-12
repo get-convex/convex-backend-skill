@@ -316,6 +316,30 @@ function findMatchingClose(text, openIndex) {
   return text.length;
 }
 
+// Convex skips basenames containing more than one dot during entry-point
+// discovery. Config files use dedicated bundle paths and remain direct.
+function isSkippedMultiDotFile(filePath, cwd) {
+  const normalized = String(filePath).replaceAll("\\", "/");
+  const base = normalized.slice(normalized.lastIndexOf("/") + 1);
+  if ((base.match(/\./g) || []).length <= 1) return false;
+  if (base === "convex.config.ts") return false;
+  if (base !== "auth.config.ts") return true;
+
+  try {
+    const configPath = resolve(cwd, "convex.json");
+    const config = existsSync(configPath)
+      ? JSON.parse(readFileSync(configPath, "utf8"))
+      : {};
+    const functionsPath =
+      typeof config.functions === "string" ? config.functions : "convex";
+    return (
+      resolve(cwd, filePath) !== resolve(cwd, functionsPath, "auth.config.ts")
+    );
+  } catch {
+    return true;
+  }
+}
+
 try {
   let payload;
   try {
@@ -380,6 +404,10 @@ try {
     }
   }
   if (typeof projected !== "string") emit(null);
+
+  // Rule 9 can downgrade a skipped entry point to the advisory channel.
+  const warnings = [];
+  let firstWarningRule = null;
 
   // --- HARD DENY rules ---------------------------------------------------
 
@@ -645,11 +673,11 @@ try {
   // runtime is a V8 isolate with no Node builtins — bundling fails with
   // "Could not resolve '<module>' ... built into node" (eval-failure repro:
   // f3-billing-entitlements, `import crypto from "crypto"` in convex/http.ts,
-  // a file with no `"use node"` directive). Unambiguous regardless of what
-  // the file defines (query/mutation/httpRouter/schema/etc.) — every
-  // non-`"use node"` file in convex/ runs in the isolate, so any Node
-  // builtin import there is always a hard deploy failure. Matches both the
-  // bare specifier (`"crypto"`) and the `node:` prefix (`"node:crypto"`).
+  // a file with no `"use node"` directive). Files with multi-dot basenames
+  // are skipped during entry-point discovery unless they are Convex config
+  // files, so those receive an advisory instead. They can still enter an
+  // isolate bundle through an import. Matches both bare specifiers (`"crypto"`)
+  // and the `node:` prefix (`"node:crypto"`).
   const nodeBuiltins = [
     "crypto", "fs", "path", "http", "https", "child_process", "os", "net",
     "tls", "dns", "stream", "zlib", "util", "buffer", "events", "url",
@@ -657,7 +685,8 @@ try {
     "worker_threads", "perf_hooks",
   ];
   const builtinAlt = nodeBuiltins.join("|");
-  if (!useNodeRe.test(projected)) {
+  const skippedMultiDot = isSkippedMultiDotFile(filePath, cwd);
+  if (skippedMultiDot || !useNodeRe.test(projected)) {
     const nodeImportRe = new RegExp(
       `(?:import\\s+(?:[\\w*{}\\s,]+\\s+from\\s+)?|require\\(\\s*)` +
         `["'](?:node:)?(${builtinAlt})["']`,
@@ -666,6 +695,21 @@ try {
     let nodeImportMatch;
     while ((nodeImportMatch = nodeImportRe.exec(projected)) !== null) {
       const mod = nodeImportMatch[1];
+      if (skippedMultiDot) {
+        if (firstWarningRule === null) {
+          firstWarningRule = "node_api_without_use_node";
+        }
+        warnings.push(
+          `convex-lint: \`${filePath}\` imports the Node builtin \`${mod}\`. ` +
+            `Convex skips this multi-dot file as an entry point, so the ` +
+            `import does not fail a deployment by itself. If a bundled ` +
+            `Convex file imports it, the importer's runtime applies; a ` +
+            `\`"use node"\` directive here does not select it. Keep that ` +
+            `import chain in a \`"use node"\` action module or remove the ` +
+            `Node builtin before importing this file from isolate code.`,
+        );
+        break;
+      }
       track("node_api_without_use_node", "deny");
       deny(
         `convex-lint rule "Node API without \"use node\"": this write ` +
@@ -890,8 +934,6 @@ try {
   // --- SOFT WARNINGS (never deny) ----------------------------------------
   // Heuristic: each `query({`-style block whose first ~300 chars contain no
   // `args:` / `returns:` gets one advisory line.
-  const warnings = [];
-  let firstWarningRule = null;
   const objectFormRe =
     /\b(query|mutation|action|internalQuery|internalMutation|internalAction)\(\s*\{/g;
   let m;
