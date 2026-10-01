@@ -204,3 +204,15 @@ test("DO_NOT_TRACK=1 → no POST", async () => {
   runHook({ cwd: tmpProject(), source: "startup" }, { DO_NOT_TRACK: "1" });
   await waitQuiet();
 });
+
+test("session_start_hook: false in .claude/convex.local.md → no POST", async () => {
+  const dir = tmpProject();
+  mkdirSync(join(dir, "convex"));
+  mkdirSync(join(dir, ".claude"));
+  writeFileSync(
+    join(dir, ".claude", "convex.local.md"),
+    "---\nsession_start_hook: false\n---\n",
+  );
+  runHook({ cwd: dir, source: "startup" });
+  await waitQuiet();
+});
