@@ -9,8 +9,10 @@
 //   `hookSpecificOutput.permissionDecision: "deny"` JSON on stdout, never via
 //   a non-zero exit, so an internal hook failure can never block a write.
 // - Self-guards: silent unless the target file is a real `convex/*.ts` source
-//   file (skips `_generated/` and `.d.ts`), same regex discipline as the
-//   convex-typecheck.mjs PostToolUse hook.
+//   file (skips `_generated/`, `.d.ts`, and vitest-only test files — `*.test.ts`
+//   / `*.spec.ts` and anything under a `__tests__/` directory, none of which
+//   Convex ever bundles), same regex discipline as the convex-typecheck.mjs
+//   PostToolUse hook.
 // - Computes projected content: `Write` carries it directly; `Edit` and
 //   `MultiEdit` are simulated by reading the current file from disk and
 //   applying the replacement(s) in order. If the file is missing or an
@@ -333,13 +335,37 @@ try {
   const serverExports = convexServerExports(cwd);
 
   // Only act on TypeScript source inside a convex/ directory.
-  // Skip generated code and declaration files.
+  // Skip generated code, declaration files, and vitest-only test files.
   const normalized = String(filePath).replaceAll("\\", "/");
+  // Test files are not Convex runtime modules, so no rule below applies to
+  // them: they execute under vitest in plain Node, where `node:fs` & friends
+  // are perfectly legal. Rule 9 in particular was a hard-deny false positive
+  // on files like `convex/__tests__/foo.source.test.ts`, blocking edits to
+  // code that is never pushed to Convex.
+  //
+  // The exemption is grounded in Convex's OWN entry-point rule rather than a
+  // naming convention, so it can't quietly disarm the guard on a module that
+  // really does deploy. `entryPoints()` in the convex CLI skips any file whose
+  // basename holds more than one dot ("Skipping <path> that contains multiple
+  // dots"), so no `*.test.ts` / `*.spec.ts` is ever bundled. A `__tests__/`
+  // directory is vitest-only as well, but only its multi-dot files get the
+  // same free pass — a single-dot helper such as
+  // `convex/__tests__/fixtures.ts` IS still collected as an entry point and
+  // pushed, so it keeps the full lint. Same edge discipline as the rest of
+  // this hook: a hard-deny false positive is the worst outcome, so when the
+  // file provably never reaches the isolate, stay silent.
+  const base = normalized.slice(normalized.lastIndexOf("/") + 1);
+  const neverBundled = (base.match(/\./g) || []).length > 1;
+  const isVitestFile =
+    neverBundled &&
+    (/(^|\/)__tests__\//.test(normalized) ||
+      /\.(test|spec)\.[cm]?tsx?$/.test(base));
   const isConvexTs =
     /(^|\/)convex\//.test(normalized) &&
     normalized.endsWith(".ts") &&
     !normalized.endsWith(".d.ts") &&
-    !normalized.includes("/_generated/");
+    !normalized.includes("/_generated/") &&
+    !isVitestFile;
   if (!isConvexTs) emit(null);
 
   // --- Compute the projected file content -------------------------------
