@@ -134,7 +134,7 @@ you invoke such a flow.
 
 ### 3. Sharing a session to improve the tools (one-time, explicit opt-in)
 
-Some flows can offer to send a **redacted** copy of your current session to the Convex team, for example to report how a build went. Sharing is opt-in. The first time a session would be sent, you are asked to choose **Always**, **Just this once**, or **Never**.
+If you run `/improve-convex-plugin`, the plugin sends a **redacted** copy of your current session to the Convex team. The agent does not offer this on its own. Sharing is opt-in. The first time a session would be sent, you are asked to choose **Always**, **Just this once**, or **Never**.
 
 - **Always** and **Never** are remembered per user in `~/.convex/improve-consent`, so you are not asked again.
 - **Just this once** shares only that session and is not stored, so a later session asks again.

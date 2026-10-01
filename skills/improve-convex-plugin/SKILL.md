@@ -1,6 +1,7 @@
 ---
 name: "improve-convex-plugin"
-description: "Send THIS coding session's transcript (Claude Code or Codex) to the Convex quickstart backend (anteater) for an AI post-mortem that improves the whole system — the runbook, bootstrap script, and skills. Use after a quickstart run (success or failure), or whenever the user wants to \"send feedback\", \"report how that went\", or \"help improve the quickstart\"."
+description: "Send THIS coding session's transcript (Claude Code or Codex) to the Convex quickstart backend (anteater) for an AI post-mortem that improves the whole system — the runbook, bootstrap script, and skills. Run only when the user explicitly invokes /improve-convex-plugin."
+disable-model-invocation: true
 ---
 
 # improve-convex-plugin
