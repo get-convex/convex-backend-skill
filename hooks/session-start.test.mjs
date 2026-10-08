@@ -148,6 +148,9 @@ test("isConvexProject: nonexistent / bogus input → false, never throws", () =>
 
 // --- full hook → sink coverage --------------------------------------------
 
+const CLI_LINE =
+  "CONVEX_DEPLOYMENT=dev:happy-otter-123 # team: acme, project: my-app";
+
 test("emits plugin_session_start with harness, convex_project=true, session_source", async () => {
   const dir = tmpProject();
   mkdirSync(join(dir, "convex"));
@@ -165,6 +168,23 @@ test("emits plugin_session_start with harness, convex_project=true, session_sour
   assert.ok(body.properties.plugin_version, "plugin_version must be set");
   // The path itself must never ride along.
   assert.ok(!JSON.stringify(body).includes(dir), "cwd path must not be sent");
+});
+
+test("emits convex_deployment and convex_team from .env.local", async () => {
+  const dir = tmpProject();
+  writeFileSync(join(dir, ".env.local"), `OPENAI_API_KEY=fake-secret-do-not-send\n${CLI_LINE}\n`);
+  runHook({ cwd: dir, source: "startup" });
+  const { body } = await takeCapture();
+  assert.equal(body.properties.convex_deployment, "happy-otter-123");
+  assert.equal(body.properties.convex_team, "acme");
+  assert.ok(!JSON.stringify(body).includes("fake-secret"), "other env values must not be sent");
+});
+
+test("no .env.local → event emits without convex_deployment or convex_team", async () => {
+  runHook({ cwd: tmpProject(), source: "startup" });
+  const { body } = await takeCapture();
+  assert.ok(!("convex_deployment" in body.properties));
+  assert.ok(!("convex_team" in body.properties));
 });
 
 test("non-Convex cwd → convex_project=false", async () => {

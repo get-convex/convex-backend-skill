@@ -1,13 +1,16 @@
 #!/usr/bin/env node
-// SessionStart hook: emits a single anonymous `plugin_session_start`
-// telemetry event (see analytics.mjs for the privacy and opt-out gates).
-// Beyond OS platform + Node version, the event carries two locally-derived,
-// non-identifying fields read from the hook payload:
+// SessionStart hook: emits a single `plugin_session_start` telemetry event
+// (see analytics.mjs for the privacy and opt-out gates).
+// Beyond OS platform + Node version, the event carries these locally-derived
+// fields read from the hook payload:
 //   - convex_project: whether the session's cwd looks like a Convex app
 //     (convex/ dir, convex.json, or a convex package dep — see
 //     isConvexProject in analytics.mjs). The boolean is sent, the path never
 //     is. This is what separates "plugin installed" from "doing Convex work"
 //     in the session numbers.
+//   - convex_deployment, convex_team: the deployment name and team slug from
+//     the CONVEX_DEPLOYMENT line in the cwd's .env.local or .env (see
+//     readConvexDeployment in analytics.mjs). Omitted when absent.
 //   - session_source: how the session began (startup | resume | clear |
 //     compact, per Claude Code's SessionStart payload). Any other value is
 //     clamped to "other" so no free-form harness string is ever recorded.
@@ -16,7 +19,7 @@
 // session.
 
 import { readFileSync } from "node:fs";
-import { capture, isConvexProject } from "./analytics.mjs";
+import { capture, isConvexProject, readConvexDeployment } from "./analytics.mjs";
 
 const SESSION_SOURCES = new Set(["startup", "resume", "clear", "compact"]);
 
@@ -35,6 +38,9 @@ try {
   };
   if (typeof payload.cwd === "string" && payload.cwd) {
     props.convex_project = isConvexProject(payload.cwd);
+    const { deployment, team } = readConvexDeployment(payload.cwd);
+    if (deployment) props.convex_deployment = deployment;
+    if (team) props.convex_team = team;
   }
   if (typeof payload.source === "string" && payload.source) {
     props.session_source = SESSION_SOURCES.has(payload.source)

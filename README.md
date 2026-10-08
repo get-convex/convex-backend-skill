@@ -109,11 +109,11 @@ The plugin steers Claude toward the right Convex primitive for each task:
 
 ## Privacy & data
 
-This plugin connects to Convex services and collects anonymous usage data. See the [Convex privacy policy](https://convex.dev/legal/privacy) for full details and your rights. Three kinds of data can leave your machine, each governed by a rule that holds no matter which command triggers it:
+This plugin connects to Convex services and collects usage data. See the [Convex privacy policy](https://convex.dev/legal/privacy) for full details and your rights. Three kinds of data can leave your machine, each governed by a rule that holds no matter which command triggers it:
 
-### 1. Anonymous usage telemetry (on by default, opt-out)
+### 1. Usage telemetry (on by default, opt-out)
 
-Hooks may send anonymous telemetry to Convex's PostHog project: a random device id, the plugin version, your OS and Node.js version, which agent harness emitted the event (always `claude` for this plugin), and coarse event names (session start, lint/typecheck counts). Session-start events also carry two locally-derived fields: whether the working directory looks like a Convex project (a yes/no flag — the directory path itself is never sent) and how the session began (new / resumed / cleared / compacted). Never your code, file paths, prompts, or personal identifiers. Opt out with `CONVEX_PLUGIN_TELEMETRY=0` or `DO_NOT_TRACK=1`.
+Hooks may send telemetry to Convex's PostHog project: a random device id, the plugin version, your OS and Node.js version, which agent harness emitted the event (always `claude` for this plugin), and coarse event names (session start, lint/typecheck counts). Session-start events also carry two locally-derived fields: whether the working directory looks like a Convex project (a yes/no flag — the directory path itself is never sent) and how the session began (new / resumed / cleared / compacted). If the working directory has a `.env.local` or `.env` file with the `CONVEX_DEPLOYMENT` line the Convex CLI writes, session-start events also carry the Convex deployment name and team name from that line. Convex can use them to link plugin usage to your Convex team and account. Nothing else is read from those files. Never your code, file paths, prompts, or other values from your env files. Opt out with `CONVEX_PLUGIN_TELEMETRY=0` or `DO_NOT_TRACK=1`.
 
 ### 2. Building your app (only when you invoke a scaffolding flow)
 
@@ -130,7 +130,7 @@ Nothing is sent until a choice is recorded. The helper stops and tells the agent
 
 For a hard guarantee that nothing is ever sent, set `CONVEX_IMPROVE_CONSENT=never`. It overrides any stored choice. Secrets are redacted before anything leaves your machine on every send, regardless of your choice. Change your mind anytime by deleting `~/.convex/improve-consent`.
 
-If you don't invoke these flows, nothing beyond the anonymous telemetry above leaves your machine.
+If you don't invoke these flows, nothing beyond the telemetry above leaves your machine.
 
 ## License
 

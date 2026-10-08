@@ -122,6 +122,47 @@ export function isConvexProject(dir) {
   return false;
 }
 
+const ENV_FILES = [".env.local", ".env"];
+const CLOUD_DEPLOYMENT_TYPES = new Set(["dev", "prod", "preview", "custom"]);
+const SLUG = /^[a-z0-9][a-z0-9_-]{0,63}$/i;
+const DEPLOYMENT_LINE = /^\s*(?:export\s+)?CONVEX_DEPLOYMENT\s*=(.*)$/gm;
+
+/**
+ * The deployment name and team slug from the `CONVEX_DEPLOYMENT` line the
+ * Convex CLI writes, e.g.
+ * `CONVEX_DEPLOYMENT=dev:happy-cat-123 # team: acme, project: app`.
+ * `.env.local` wins over `.env`, and within a file the last line wins, matching
+ * how the CLI loads them with dotenv. Returns only the two values
+ * and nothing else from the file. The deployment name is kept for cloud
+ * deployments only, and either value is dropped unless it looks like a slug.
+ * Never throws.
+ * @param {unknown} dir
+ * @returns {{ deployment?: string, team?: string }}
+ */
+export function readConvexDeployment(dir) {
+  if (typeof dir !== "string" || !dir) return {};
+  for (const file of ENV_FILES) {
+    let text;
+    try {
+      text = readFileSync(join(dir, file), "utf8");
+    } catch {
+      continue;
+    }
+    const line = [...text.matchAll(DEPLOYMENT_LINE)].at(-1)?.[1];
+    if (line === undefined) continue;
+    const [value, comment = ""] = line.split("#");
+    const [type, name] = value.trim().replace(/^["'`]|["'`]$/g, "").split(":");
+    const team = comment.match(/team:\s*([^,\s]+)/)?.[1];
+    const result = {};
+    if (CLOUD_DEPLOYMENT_TYPES.has(type) && SLUG.test(name ?? "")) {
+      result.deployment = name;
+    }
+    if (team && SLUG.test(team)) result.team = team;
+    return result;
+  }
+  return {};
+}
+
 // Fire-and-forget event capture. Safe to call from any hook path: a no-op
 // when telemetry is disabled, and otherwise returns immediately after
 // spawning the detached emitter child. Never throws.
