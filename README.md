@@ -76,23 +76,23 @@ Claude will pick the right Convex primitive or component, scaffold the schema, w
 ## What's bundled
 
 | Component | Purpose |
-|---|---|
+| --- | --- |
 | **`design` skill** | Backend architecture, design thinking, anti-patterns, runtime-error decoder, proactive recommendations. Loaded into context whenever a backend ask is detected. |
 | **`quickstart` skill** (`/quickstart`) | Idea → running app in under a minute. Scaffolds a Next.js + shadcn "wow-shell" with a floating Chef panel (live progress feed, pulsing todo checklist, inline refinement questions, feature-request form), starts `convex dev` + `next dev` with error watchers armed, opens the browser, then builds the idea live. Hands `convex/` code to `convex-expert`. |
 | **`convex-expert` subagent** | Deep code-writing rules — object-form syntax, validator requirements, index naming, internal-vs-public, schema evolution, resource limits, component reflexes. Loaded only when delegated to, so the rules don't burn main-thread context. |
 | **Convex MCP server** | Live deployment introspection — `tables`, `function-spec`, `data`, `run-once-query`, `logs`, `env list/set/get`. Auto-wires via `npx convex mcp start` when the plugin is enabled. |
-| **Lint-on-save hook** | PreToolUse gate that blocks Convex anti-patterns *before they reach disk* (and before `convex dev` can push them): `.filter(q => q.field(...))` on db queries and old positional function syntax are denied with the correct pattern in the message; missing `args`/`returns` validators surface as advisories. |
+| **Lint-on-save hook** | PreToolUse gate that blocks Convex anti-patterns _before they reach disk_ (and before `convex dev` can push them): `.filter(q => q.field(...))` on db queries and old positional function syntax are denied with the correct pattern in the message; missing `args`/`returns` validators surface as advisories. |
 | **End-of-turn verify hook** | Stop hook that enforces the "self-verify before you stop" rule: when a turn leaves uncommitted `convex/*.ts` changes, it runs `convex codegen`, `tsc --noEmit`, and — only when `.env.local` already names a `CONVEX_DEPLOYMENT` (never provisions one) — `convex dev --once`. Real errors block the stop (exit 2) so the agent fixes them before finishing; loop-guarded via `stop_hook_active`, with a hard ~90s budget that allows rather than wedges on timeout. |
 | **Runtime-error monitor** | Streams `npx convex logs` and surfaces matched errors (TS / schema validation / runtime exceptions / OCC conflicts) as Claude notifications, so you find out about server-side failures the moment they happen. Self-guards on unlinked projects. |
-| **OCC / insights monitor** | Polls `npx convex insights` every 10 minutes and notifies only on *new* OCC conflicts or read-limit insights, with the fix playbook (shrink transactions, `@convex-dev/aggregate` for hot counters, `.withIndex()`/`.paginate()` for read limits). Cloud deployments with user-level auth only; silent otherwise. |
-| **Feature-request monitor** | During a `quickstart` build, watches the Chef panel's `featureRequests:listPending` and pushes a notification the moment the user submits a new request — even across turns — so the agent picks it up without babysitting a log. Notifies only on *new* requests; works on local/anonymous deployments too. |
+| **OCC / insights monitor** | Polls `npx convex insights` every 10 minutes and notifies only on _new_ OCC conflicts or read-limit insights, with the fix playbook (shrink transactions, `@convex-dev/aggregate` for hot counters, `.withIndex()`/`.paginate()` for read limits). Cloud deployments with user-level auth only; silent otherwise. |
+| **Feature-request monitor** | During a `quickstart` build, watches the Chef panel's `featureRequests:listPending` and pushes a notification the moment the user submits a new request — even across turns — so the agent picks it up without babysitting a log. Notifies only on _new_ requests; works on local/anonymous deployments too. |
 
 ## Capabilities
 
 The plugin steers Claude toward the right Convex primitive for each task:
 
 | Need | What you get |
-|---|---|
+| --- | --- |
 | Database + schema | Schema-first design with `defineSchema` + `defineTable`, end-to-end TypeScript types, indexes for every read path |
 | Real-time / multiplayer | Reactive `useQuery` over WebSockets — no separate real-time service to wire |
 | Auth | Convex Auth (zero-touch with password) or WorkOS AuthKit, plus a thin `users` table — no custom sessions/accounts tables |
@@ -109,28 +109,15 @@ The plugin steers Claude toward the right Convex primitive for each task:
 
 ## Privacy & data
 
-This plugin connects to Convex services and collects anonymous usage data. See the
-[Convex privacy policy](https://convex.dev/legal/privacy) for full details and your rights.
-Three kinds of data can leave your machine, each governed by a rule that holds no matter
-which command triggers it:
+This plugin connects to Convex services and collects anonymous usage data. See the [Convex privacy policy](https://convex.dev/legal/privacy) for full details and your rights. Three kinds of data can leave your machine, each governed by a rule that holds no matter which command triggers it:
 
 ### 1. Anonymous usage telemetry (on by default, opt-out)
 
-Hooks may send anonymous telemetry to Convex's PostHog project: a random device id, the
-plugin version, your OS and Node.js version, which agent harness emitted the event (always `claude` for this
-plugin), and coarse event names (session start, lint/typecheck counts). Session-start
-events also carry two locally-derived fields: whether the working directory looks like a
-Convex project (a yes/no flag — the directory path itself is never sent) and how the
-session began (new / resumed / cleared / compacted). Never your code, file paths, prompts, or
-personal identifiers. Opt out with `CONVEX_PLUGIN_TELEMETRY=0` or `DO_NOT_TRACK=1`.
+Hooks may send anonymous telemetry to Convex's PostHog project: a random device id, the plugin version, your OS and Node.js version, which agent harness emitted the event (always `claude` for this plugin), and coarse event names (session start, lint/typecheck counts). Session-start events also carry two locally-derived fields: whether the working directory looks like a Convex project (a yes/no flag — the directory path itself is never sent) and how the session began (new / resumed / cleared / compacted). Never your code, file paths, prompts, or personal identifiers. Opt out with `CONVEX_PLUGIN_TELEMETRY=0` or `DO_NOT_TRACK=1`.
 
 ### 2. Building your app (only when you invoke a scaffolding flow)
 
-Flows that scaffold or extend an app (such as `quickstart` and `/add`) send the inputs you
-give them to the Convex scaffolding service so it can build for you — for example, the
-one-sentence idea you type is sent to the scaffolding endpoint and logged as a run start.
-These flows also download and run setup scripts from that service. This happens only when
-you invoke such a flow.
+Flows that scaffold or extend an app (such as `quickstart` and `/add`) send the inputs you give them to the Convex scaffolding service so it can build for you — for example, the one-sentence idea you type is sent to the scaffolding endpoint and logged as a run start. These flows also download and run setup scripts from that service. This happens only when you invoke such a flow.
 
 ### 3. Sharing a session to improve the tools (one-time, explicit opt-in)
 
