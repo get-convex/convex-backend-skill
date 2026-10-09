@@ -6,7 +6,7 @@
 //
 // Design notes:
 // - NEVER delays or breaks a hook. Hooks are short-lived processes, so an
-//   awaited fetch would hold Claude's turn open. Instead `capture()` spawns
+//   awaited fetch would hold the agent's turn open. Instead `capture()` spawns
 //   `node analytics.mjs --emit <base64 payload>` as a DETACHED child
 //   (stdio ignored, .unref()'d) and returns immediately; the parent hook can
 //   exit while the child completes the POST on its own (3s abort timeout,
@@ -20,8 +20,8 @@
 //     * DO_NOT_TRACK is "1"/"true" → disabled (ecosystem convention).
 // - Privacy: NO code contents, file paths, prompts, or user identifiers ever
 //   go into event properties. Only an anonymous random device id
-//   (~/.convex/plugin-device-id), the plugin version, OS platform, the fixed
-//   harness tag ("claude"), locally-derived booleans (e.g. convex_project),
+//   (~/.convex/plugin-device-id), the plugin version, OS platform, the
+//   harness tag, locally-derived booleans (e.g. convex_project),
 //   and coarse event metadata (rule slugs, error counts, session source).
 //   snake_case event names.
 // - Any filesystem failure (unwritable home dir, missing plugin.json) falls
@@ -42,13 +42,6 @@ const DEFAULT_POSTHOG_KEY = "phc_JDNTRxeh2li2sQTRO0IcOYMJcp8fPs5nTK9TU751nQK";
 const POSTHOG_KEY = process.env.CONVEX_PLUGIN_POSTHOG_KEY ?? DEFAULT_POSTHOG_KEY;
 const POSTHOG_HOST =
   process.env.CONVEX_PLUGIN_POSTHOG_HOST ?? "https://us.i.posthog.com";
-
-// Which agent surface emits these events. The Convex plugins for other
-// harnesses (Codex, …) send the same event names to the same project, so
-// every event carries a `harness` discriminator — same vocabulary as the
-// `harness` standard property in convex-agents POSTHOG.md §3
-// (claude | codex | cursor | …). This plugin is the Claude Code surface.
-const HARNESS = "claude";
 
 function isDisabled() {
   if (!POSTHOG_KEY) return true;
@@ -79,14 +72,14 @@ function deviceId() {
   }
 }
 
-// Plugin version, read lazily from ../.claude-plugin/plugin.json relative to
+// Plugin version, read lazily from ../<manifestDir>/plugin.json relative to
 // this script so it works wherever the plugin is installed.
-function pluginVersion() {
+function pluginVersion(manifestDir) {
   try {
     const manifest = join(
       dirname(fileURLToPath(import.meta.url)),
       "..",
-      ".claude-plugin",
+      manifestDir,
       "plugin.json",
     );
     const version = JSON.parse(readFileSync(manifest, "utf8")).version;
@@ -122,7 +115,6 @@ export function isConvexProject(dir) {
   return false;
 }
 
-const ENV_FILES = [".env.local", ".env"];
 const CLOUD_DEPLOYMENT_TYPES = new Set(["dev", "prod", "preview", "custom"]);
 const SLUG = /^[a-z0-9][a-z0-9_-]{0,63}$/i;
 const DEPLOYMENT_LINE = /^\s*(?:export\s+)?CONVEX_DEPLOYMENT\s*=(.*)$/gm;
@@ -133,21 +125,14 @@ const DEPLOYMENT_LINE = /^\s*(?:export\s+)?CONVEX_DEPLOYMENT\s*=(.*)$/gm;
  * `CONVEX_DEPLOYMENT=dev:happy-cat-123 # team: acme, project: app`.
  * `.env.local` wins over `.env`, and within a file the last line wins, matching
  * how the CLI loads them with dotenv. Returns only the two values
- * and nothing else from the file. The deployment name is kept for cloud
+ * and nothing else from the files. The deployment name is kept for cloud
  * deployments only, and either value is dropped unless it looks like a slug.
- * Never throws.
- * @param {unknown} dir
+ * @param {{ envLocal?: string, env?: string }} files the text of `.env.local` and `.env`, when they exist
  * @returns {{ deployment?: string, team?: string }}
  */
-export function readConvexDeployment(dir) {
-  if (typeof dir !== "string" || !dir) return {};
-  for (const file of ENV_FILES) {
-    let text;
-    try {
-      text = readFileSync(join(dir, file), "utf8");
-    } catch {
-      continue;
-    }
+export function parseConvexDeployment({ envLocal, env }) {
+  for (const text of [envLocal, env]) {
+    if (typeof text !== "string") continue;
     const line = [...text.matchAll(DEPLOYMENT_LINE)].at(-1)?.[1];
     if (line === undefined) continue;
     const [value, comment = ""] = line.split("#");
@@ -163,35 +148,49 @@ export function readConvexDeployment(dir) {
   return {};
 }
 
-// Fire-and-forget event capture. Safe to call from any hook path: a no-op
-// when telemetry is disabled, and otherwise returns immediately after
-// spawning the detached emitter child. Never throws.
-export function capture(event, properties = {}) {
-  try {
-    if (isDisabled()) return;
-    const body = {
-      api_key: POSTHOG_KEY,
-      event,
-      distinct_id: deviceId(),
-      properties: {
-        ...properties,
-        harness: HARNESS,
-        plugin_version: pluginVersion(),
-        $process_person_profile: false,
-      },
-    };
-    const payload = Buffer.from(
-      JSON.stringify({ host: POSTHOG_HOST, body }),
-    ).toString("base64");
-    const child = spawn(
-      process.execPath,
-      [fileURLToPath(import.meta.url), "--emit", payload],
-      { detached: true, stdio: "ignore" },
-    );
-    child.unref();
-  } catch {
-    // Telemetry must never change hook behavior.
-  }
+/**
+ * Telemetry for one plugin. Every event carries `harness`, the agent the
+ * plugin runs in, and the plugin version read from `<manifestDir>/plugin.json`
+ * in the plugin root.
+ * @param {{ harness: string, manifestDir: string }} plugin e.g. `{ harness: "claude", manifestDir: ".claude-plugin" }`
+ */
+export function makeAnalytics({ harness, manifestDir }) {
+  return {
+    /**
+     * Fire-and-forget event capture. A no-op when telemetry is disabled,
+     * otherwise returns right after spawning the detached emitter child.
+     * Never throws.
+     * @param {string} event
+     * @param {Record<string, unknown>} [properties]
+     */
+    capture(event, properties = {}) {
+      try {
+        if (isDisabled()) return;
+        const body = {
+          api_key: POSTHOG_KEY,
+          event,
+          distinct_id: deviceId(),
+          properties: {
+            ...properties,
+            harness,
+            plugin_version: pluginVersion(manifestDir),
+            $process_person_profile: false,
+          },
+        };
+        const payload = Buffer.from(
+          JSON.stringify({ host: POSTHOG_HOST, body }),
+        ).toString("base64");
+        const child = spawn(
+          process.execPath,
+          [fileURLToPath(import.meta.url), "--emit", payload],
+          { detached: true, stdio: "ignore" },
+        );
+        child.unref();
+      } catch {
+        // Telemetry must never change hook behavior.
+      }
+    },
+  };
 }
 
 // Child entrypoint: `node analytics.mjs --emit <base64 payload>` decodes the

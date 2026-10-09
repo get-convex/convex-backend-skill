@@ -41,7 +41,7 @@ import {
 } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { capture as realCapture } from "./analytics.mjs";
+import { analytics } from "./plugin.mjs";
 
 const OVERALL_BUDGET_MS = 90_000;
 const GIT_TIMEOUT_MS = 10_000;
@@ -134,7 +134,7 @@ export function main(payload, overrides = {}) {
     readFileSync = realReadFileSync,
     now = Date.now,
     budgetMs = OVERALL_BUDGET_MS,
-    capture = realCapture,
+    capture = analytics.capture,
   } = overrides;
   const fsDeps = { existsSync, readFileSync };
 

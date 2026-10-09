@@ -122,7 +122,7 @@
 import { readFileSync, existsSync } from "node:fs";
 import { resolve, dirname, join } from "node:path";
 import { createRequire } from "node:module";
-import { capture } from "./analytics.mjs";
+import { analytics } from "./plugin.mjs";
 
 // Fire-and-forget telemetry (one event per hook run, primary finding only).
 // `capture` already swallows every error and spawns a detached child, but
@@ -136,7 +136,7 @@ import { capture } from "./analytics.mjs";
 // import — verified below, that check runs before any file I/O or tsc call.)
 function track(rule, action) {
   try {
-    capture("lint_hook_fired", { rule, action });
+    analytics.capture("lint_hook_fired", { rule, action });
   } catch {
     // never let telemetry affect the lint decision
   }
