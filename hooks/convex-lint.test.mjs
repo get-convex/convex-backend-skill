@@ -600,6 +600,95 @@ test("allows Web Crypto via globalThis.crypto with no import", () => {
   assertAllowedSilent(result);
 });
 
+test("advises instead of denying for a Node builtin in a test file", () => {
+  const result = runHook(
+    writePayload(
+      "/tmp/proj/convex/foo.test.ts",
+      `import { readFileSync } from "node:fs";\n`,
+    ),
+  );
+  assertAdvisory(result, "skips this multi-dot file as an entry point");
+});
+
+test("advises for every skipped multi-dot basename", () => {
+  const result = runHook(
+    writePayload(
+      "/tmp/proj/convex/foo.helpers.ts",
+      `import { join } from "node:path";\n`,
+    ),
+  );
+  assertAdvisory(result, "skips this multi-dot file as an entry point");
+});
+
+test('advises for a skipped file carrying "use node"', () => {
+  const result = runHook(
+    writePayload(
+      "/tmp/proj/convex/foo.test.ts",
+      `"use node";\nimport { readFileSync } from "node:fs";\n`,
+    ),
+  );
+  assertAdvisory(result, "the importer's runtime applies");
+});
+
+test("still denies a Node builtin in root auth.config.ts", () => {
+  const payload = writePayload(
+    "/tmp/proj/convex/auth.config.ts",
+    `import { readFileSync } from "node:fs";\n`,
+  );
+  payload.cwd = "/tmp/proj";
+  assertDenied(runHook(payload), 'Node API without "use node"');
+});
+
+test("still denies auth.config.ts in a configured functions directory", () => {
+  const root = mkdtempSync(join(tmpdir(), "convex-lint-auth-config-"));
+  try {
+    writeFileSync(
+      join(root, "convex.json"),
+      JSON.stringify({ functions: "src/lib/convex" }),
+    );
+    const payload = writePayload(
+      join(root, "src", "lib", "convex", "auth.config.ts"),
+      `import { readFileSync } from "node:fs";\n`,
+    );
+    payload.cwd = root;
+    assertDenied(runHook(payload), 'Node API without "use node"');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("advises for a nested auth.config.ts", () => {
+  const result = runHook(
+    writePayload(
+      "/tmp/proj/convex/nested/auth.config.ts",
+      `import { readFileSync } from "node:fs";\n`,
+    ),
+  );
+  assertAdvisory(result, "skips this multi-dot file as an entry point");
+});
+
+test("advises when a nested directory is also named convex", () => {
+  const payload = writePayload(
+    "/tmp/proj/convex/nested/convex/auth.config.ts",
+    `import { readFileSync } from "node:fs";\n`,
+  );
+  payload.cwd = "/tmp/proj";
+  assertAdvisory(
+    runHook(payload),
+    "skips this multi-dot file as an entry point",
+  );
+});
+
+test("still denies a Node builtin in convex.config.ts", () => {
+  const result = runHook(
+    writePayload(
+      "/tmp/proj/convex/component/convex.config.ts",
+      `import { readFileSync } from "node:fs";\n`,
+    ),
+  );
+  assertDenied(result, 'Node API without "use node"');
+});
+
 // --- pre-existing rules still work (regression guard) ----------------------
 
 test("still denies .filter(q => q.field(...)) on a db query", () => {
